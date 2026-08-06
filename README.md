@@ -5,7 +5,7 @@
 NTAgentShield แบ่งระบบเป็นสองส่วนที่ทำงานร่วมกัน:
 
 1. **Control Plane** ที่ root ของ repository ใช้ Python/FastAPI สำหรับ normalize telemetry, ทำ behavioral baseline, correlation, incident scoring, evidence-backed AI analysis และ War Room API
-2. **Endpoint Agent** ที่ `agent/` ใช้ Go สำหรับอ่าน log, ตรวจ code และพฤติกรรมในเครื่อง, redact secret, เก็บ evidence แบบ tamper-evident และส่งข้อมูลไป Control Plane โดยไม่มี generic shell ให้ AI ใช้
+2. **Endpoint Agent** ที่ `agent/` ใช้ Go สำหรับเก็บ asset inventory, อ่าน log, ตรวจ code และพฤติกรรมในเครื่อง, redact secret, เก็บ evidence แบบ tamper-evident และส่งข้อมูลไป Control Plane โดยไม่มี generic shell ให้ AI ใช้
 
 ระบบไม่ได้อ้างว่ารู้จักช่องโหว่ที่ยังไม่มีใครรู้จักล่วงหน้า สิ่งที่ระบบทำคือมองหา **พฤติกรรม exploitation และ post-exploitation** จากหลายแหล่ง เชื่อมเป็น attack chain แล้วให้ Qwen วิเคราะห์เฉพาะหลักฐานที่ผ่านขอบเขตความไว้วางใจแล้ว
 
@@ -14,17 +14,18 @@ NTAgentShield แบ่งระบบเป็นสองส่วนที่
 ```mermaid
 flowchart LR
   A[Windows / Linux / IIS / Nginx / DB / Firewall / Source Code] --> B[Go Endpoint Agent]
-  B --> C[Local Redaction + Deterministic Detection]
-  C --> D[Hash-chained Evidence Journal]
-  C --> E[Secure Transport]
-  E --> F[Python Control Plane]
-  F --> G[Normalizer + Online Baseline]
-  F --> H[Behavior Sequence Engine]
-  G --> I[Incident Correlator]
-  H --> I
-  I --> J[Evidence Bundle]
-  J --> K[Read-only Qwen Analyst]
-  K --> L[War Room / Incident API]
+  B --> C[Native Inventory + Log Collection]
+  C --> D[Recursive Redaction + Deterministic Detection]
+  D --> E[Hash-chained Evidence Journal]
+  D --> F[Secure Transport]
+  F --> G[Python Control Plane]
+  G --> H[Normalizer + Online Baseline]
+  G --> I[Behavior Sequence Engine]
+  H --> J[Incident Correlator]
+  I --> J
+  J --> K[Evidence Bundle]
+  K --> L[Read-only Qwen Analyst]
+  L --> M[War Room / Incident API]
 ```
 
 ## สิ่งที่มีแล้ว
@@ -43,11 +44,13 @@ flowchart LR
 ### Secure Endpoint Agent
 
 - Agent daemon และ CLI สำหรับ Windows/Linux
+- Native asset inventory สำหรับ OS, network interfaces, process, service, listening socket และ installed software/package
 - Parsers สำหรับ IIS W3C, Nginx combined, MySQL general log, Syslog, normalized JSON และ raw text
 - Deterministic detections สำหรับ prompt injection ใน telemetry, encoded PowerShell, web-worker-to-shell, path traversal, high-risk SQL, security-control disabling, webroot writes และ authentication bursts
 - Code-security scanner สำหรับ secret, command execution, dynamic evaluation, SQL concatenation, TLS bypass, unsafe deserialization, Docker/GitHub Actions และ PHP web-shell patterns
 - SHA-256 hash-chained evidence journal
-- Secret redaction ก่อน persistence หรือ AI transfer
+- Recursive secret redaction สำหรับ map, array, nested struct, command-line flag และ URI credentials
+- Machine ID และ Boot ID ถูกเก็บเป็น scoped SHA-256 hash ไม่เก็บค่า OS identifier ดิบ
 - Typed read-only tools พร้อม path allowlist และ symlink resolution
 - Policy engine ที่ปฏิเสธ generic shell และห้าม untrusted telemetry สั่งเปลี่ยนระบบโดยตรง
 - Loopback-only authenticated local API ที่ไม่มี command endpoint
@@ -55,15 +58,16 @@ flowchart LR
 
 ## Security invariants
 
-1. Log, HTTP field, SQL comment, source comment, RAG document และ network data เป็น untrusted evidence เสมอ
+1. Log, HTTP field, SQL comment, source comment, process command line, RAG document และ network data เป็น untrusted evidence เสมอ
 2. AI analyst ไม่มี generic shell และไม่มี privileged action tool
 3. Tool risk มาจาก registry ไม่รับค่าจากโมเดล
 4. Untrusted evidence ไม่สามารถ trigger containment หรือ mutation โดยตรง
 5. State-changing action ต้องผ่าน deterministic policy, exact action digest และ approval ที่มีวันหมดอายุ
-6. Secret ถูก redact ก่อน journal, transport และ AI context
-7. Tenant, asset และ time scope ถูกบังคับโดยระบบ ไม่ให้โมเดลขยายเอง
-8. รายงาน AI ที่อ้าง evidence ID ไม่มีจริงจะถูกปฏิเสธ
-9. Zero-day เป็น hypothesis จนกว่าจะมี reproduction และการยืนยันจากมนุษย์
+6. Secret ถูก redact ก่อน journal, transport และ AI context รวมถึงข้อมูลที่ซ้อนอยู่ใน inventory struct
+7. Native inventory ใช้เฉพาะ command และ argument ที่กำหนดตายตัวใน code พร้อม timeout และ result cap
+8. Tenant, asset และ time scope ถูกบังคับโดยระบบ ไม่ให้โมเดลขยายเอง
+9. รายงาน AI ที่อ้าง evidence ID ไม่มีจริงจะถูกปฏิเสธ
+10. Zero-day เป็น hypothesis จนกว่าจะมี reproduction และการยืนยันจากมนุษย์
 
 ## โครงสร้าง Repository
 
@@ -76,6 +80,7 @@ flowchart LR
 ├── agent/               # Full Go endpoint/server agent
 │   ├── cmd/
 │   ├── internal/
+│   │   └── inventory/   # Native Windows/Linux asset inventory
 │   ├── config/
 │   ├── policies/
 │   ├── schemas/
@@ -115,7 +120,20 @@ ntshield replay examples/zero_day_web_chain.jsonl
 ```bash
 cd agent
 go test ./...
-go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl
+go build ./cmd/ntagentshield-agent \
+  ./cmd/ntagentshieldctl \
+  ./cmd/ntagentshield-inventory
+```
+
+ดู Asset Inventory ของเครื่อง:
+
+```bash
+go run ./cmd/ntagentshield-inventory \
+  --processes=true \
+  --services=true \
+  --listeners=true \
+  --software=true \
+  --max-items 512
 ```
 
 ตรวจ IIS log:
@@ -175,13 +193,13 @@ make agent-race
 make agent
 ```
 
-CI ทดสอบ Python บน Linux และ Go Agent บน Linux/Windows พร้อม `go vet`, race test และ formatting gate
+CI ทดสอบ Python บน Linux และ Go Agent บน Linux/Windows พร้อม `go vet`, race test, inventory binary build และ formatting gate
 
 ## ขอบเขตถัดไป
 
 - Native Windows Event Log, Sysmon และ ETW collectors
 - Linux journald, auditd และ eBPF telemetry
-- Asset inventory, service/process/network inventory และ software/SBOM inventory
+- Inventory-delta detection สำหรับ service/listener/software drift และ process ancestry ที่ผิดปกติ
 - Signed enrollment, mTLS, signed policy และ signed update
 - Production response broker สำหรับ quarantine, process containment และ host isolation
 - Multi-tenant fleet policy, central correlation และ customer reporting
@@ -192,6 +210,7 @@ CI ทดสอบ Python บน Linux และ Go Agent บน Linux/Windows �
 - [Control-plane architecture](docs/ARCHITECTURE.md)
 - [Behavioral zero-day hunting](docs/BEHAVIORAL-ZERO-DAY.md)
 - [Control-plane roadmap](docs/ROADMAP.md)
+- [Endpoint Agent](agent/README.md)
 - [Agent architecture](agent/docs/ARCHITECTURE.md)
 - [Agent threat model](agent/docs/THREAT_MODEL.md)
 - [Agent AI security](agent/docs/AI_SECURITY.md)

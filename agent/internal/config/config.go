@@ -46,6 +46,17 @@ type AI struct {
 	Timeout     string `json:"timeout"`
 }
 
+type Inventory struct {
+	Enabled          bool   `json:"enabled"`
+	Interval         string `json:"interval"`
+	CommandTimeout   string `json:"command_timeout"`
+	IncludeProcesses bool   `json:"include_processes"`
+	IncludeServices  bool   `json:"include_services"`
+	IncludeListeners bool   `json:"include_listeners"`
+	IncludeSoftware  bool   `json:"include_software"`
+	MaxItems         int    `json:"max_items"`
+}
+
 type Config struct {
 	AgentID      string        `json:"agent_id"`
 	TenantID     string        `json:"tenant_id"`
@@ -56,6 +67,7 @@ type Config struct {
 	API          API           `json:"api"`
 	Tools        ToolPolicy    `json:"tools"`
 	AI           AI            `json:"ai"`
+	Inventory    Inventory     `json:"inventory"`
 }
 
 func Default() Config {
@@ -73,6 +85,16 @@ func Default() Config {
 			AllowedPaths: []string{"."},
 		},
 		AI: AI{Enabled: false, Timeout: "30s"},
+		Inventory: Inventory{
+			Enabled:          true,
+			Interval:         "15m",
+			CommandTimeout:   "10s",
+			IncludeProcesses: true,
+			IncludeServices:  true,
+			IncludeListeners: true,
+			IncludeSoftware:  true,
+			MaxItems:         512,
+		},
 	}
 }
 
@@ -122,6 +144,15 @@ func (c *Config) applyDefaults(configPath string) {
 	if !filepath.IsAbs(c.Tools.PolicyFile) {
 		c.Tools.PolicyFile = filepath.Clean(filepath.Join(base, c.Tools.PolicyFile))
 	}
+	if c.Inventory.Interval == "" {
+		c.Inventory.Interval = "15m"
+	}
+	if c.Inventory.CommandTimeout == "" {
+		c.Inventory.CommandTimeout = "10s"
+	}
+	if c.Inventory.MaxItems <= 0 {
+		c.Inventory.MaxItems = 512
+	}
 	for i := range c.Sources {
 		if c.Sources[i].Trust == "" {
 			c.Sources[i].Trust = model.TrustUntrustedTelemetry
@@ -163,6 +194,25 @@ func (c Config) Validate() error {
 		}
 		if _, err := time.ParseDuration(c.AI.Timeout); err != nil {
 			return fmt.Errorf("invalid ai.timeout: %w", err)
+		}
+	}
+	if c.Inventory.Enabled {
+		interval, err := time.ParseDuration(c.Inventory.Interval)
+		if err != nil {
+			return fmt.Errorf("invalid inventory.interval: %w", err)
+		}
+		if interval < time.Minute || interval > 24*time.Hour {
+			return errors.New("inventory.interval must be between 1m and 24h")
+		}
+		timeout, err := time.ParseDuration(c.Inventory.CommandTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid inventory.command_timeout: %w", err)
+		}
+		if timeout < time.Second || timeout > 2*time.Minute {
+			return errors.New("inventory.command_timeout must be between 1s and 2m")
+		}
+		if c.Inventory.MaxItems < 1 || c.Inventory.MaxItems > 10000 {
+			return errors.New("inventory.max_items must be between 1 and 10000")
 		}
 	}
 	seen := map[string]struct{}{}

@@ -15,38 +15,47 @@ import (
 	"github.com/paddman/NTAgentShield/internal/collector/filetail"
 	"github.com/paddman/NTAgentShield/internal/config"
 	"github.com/paddman/NTAgentShield/internal/detection"
+	"github.com/paddman/NTAgentShield/internal/inventory"
 	"github.com/paddman/NTAgentShield/internal/model"
 	"github.com/paddman/NTAgentShield/internal/redact"
 	"github.com/paddman/NTAgentShield/internal/store"
 )
 
 type Runtime struct {
-	cfg          config.Config
-	hostname     string
-	journal      *store.Journal
-	detector     *detection.Engine
-	tailers      []*filetail.Tailer
-	logger       *log.Logger
-	startedAt    time.Time
-	eventCount   atomic.Uint64
-	findingCount atomic.Uint64
-	errorCount   atomic.Uint64
+	cfg                config.Config
+	hostname           string
+	journal            *store.Journal
+	detector           *detection.Engine
+	tailers            []*filetail.Tailer
+	inventoryCollector *inventory.Collector
+	inventoryInterval  time.Duration
+	logger             *log.Logger
+	startedAt          time.Time
+	eventCount         atomic.Uint64
+	findingCount       atomic.Uint64
+	errorCount         atomic.Uint64
+	inventoryCount     atomic.Uint64
+	lastInventoryNano  atomic.Int64
 }
 
 type Status struct {
-	Status      string         `json:"status"`
-	AgentID     string         `json:"agent_id"`
-	TenantID    string         `json:"tenant_id,omitempty"`
-	Hostname    string         `json:"hostname"`
-	StartedAt   time.Time      `json:"started_at"`
-	Uptime      string         `json:"uptime"`
-	Events      uint64         `json:"events"`
-	Findings    uint64         `json:"findings"`
-	Errors      uint64         `json:"errors"`
-	Sources     int            `json:"sources"`
-	AIEnabled   bool           `json:"ai_enabled"`
-	Build       buildinfo.Info `json:"build"`
-	SafetyModel string         `json:"safety_model"`
+	Status            string         `json:"status"`
+	AgentID           string         `json:"agent_id"`
+	TenantID          string         `json:"tenant_id,omitempty"`
+	Hostname          string         `json:"hostname"`
+	StartedAt         time.Time      `json:"started_at"`
+	Uptime            string         `json:"uptime"`
+	Events            uint64         `json:"events"`
+	Findings          uint64         `json:"findings"`
+	Errors            uint64         `json:"errors"`
+	Sources           int            `json:"sources"`
+	AIEnabled         bool           `json:"ai_enabled"`
+	InventoryEnabled  bool           `json:"inventory_enabled"`
+	InventoryRuns     uint64         `json:"inventory_runs"`
+	LastInventoryAt   *time.Time     `json:"last_inventory_at,omitempty"`
+	InventoryInterval string         `json:"inventory_interval,omitempty"`
+	Build             buildinfo.Info `json:"build"`
+	SafetyModel       string         `json:"safety_model"`
 }
 
 func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
@@ -80,23 +89,51 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 		}
 		runtime.tailers = append(runtime.tailers, tailer)
 	}
+	if cfg.Inventory.Enabled {
+		interval, err := time.ParseDuration(cfg.Inventory.Interval)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize inventory interval: %w", err)
+		}
+		timeout, err := time.ParseDuration(cfg.Inventory.CommandTimeout)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize inventory command timeout: %w", err)
+		}
+		collector, err := inventory.New(inventory.Options{
+			IncludeProcesses: cfg.Inventory.IncludeProcesses,
+			IncludeServices:  cfg.Inventory.IncludeServices,
+			IncludeListeners: cfg.Inventory.IncludeListeners,
+			IncludeSoftware:  cfg.Inventory.IncludeSoftware,
+			MaxItems:         cfg.Inventory.MaxItems,
+			CommandTimeout:   timeout,
+		})
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize inventory: %w", err)
+		}
+		runtime.inventoryCollector = collector
+		runtime.inventoryInterval = interval
+	}
 	return runtime, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
 	startup := map[string]interface{}{
-		"agent_id":     r.cfg.AgentID,
-		"tenant_id":    r.cfg.TenantID,
-		"hostname":     r.hostname,
-		"sources":      len(r.tailers),
-		"build":        buildinfo.Current(),
-		"ai_enabled":   r.cfg.AI.Enabled,
-		"safety_model": "untrusted evidence -> deterministic policy gate -> typed tools",
+		"agent_id":           r.cfg.AgentID,
+		"tenant_id":          r.cfg.TenantID,
+		"hostname":           r.hostname,
+		"file_sources":       len(r.tailers),
+		"inventory_enabled":  r.inventoryCollector != nil,
+		"inventory_interval": r.cfg.Inventory.Interval,
+		"build":              buildinfo.Current(),
+		"ai_enabled":         r.cfg.AI.Enabled,
+		"safety_model":       "untrusted evidence -> deterministic policy gate -> typed tools",
 	}
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
 	}
-	r.logger.Printf("agent started id=%s sources=%d ai_enabled=%t", r.cfg.AgentID, len(r.tailers), r.cfg.AI.Enabled)
+	r.logger.Printf("agent started id=%s sources=%d inventory_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), r.inventoryCollector != nil, r.cfg.AI.Enabled)
 
 	errCh := make(chan error, 1)
 	if r.cfg.API.Enabled {
@@ -109,7 +146,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 		r.logger.Printf("local API listening on %s; command execution is not exposed", r.cfg.API.Listen)
 	}
 
-	r.poll()
+	r.collectInventory(ctx, true)
+	r.poll(ctx)
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -122,18 +160,20 @@ func (r *Runtime) Run(ctx context.Context) error {
 				return fmt.Errorf("local API: %w", err)
 			}
 		case <-ticker.C:
-			r.poll()
+			r.poll(ctx)
+			r.collectInventory(ctx, false)
 		}
 	}
 }
 
-func (r *Runtime) poll() {
+func (r *Runtime) poll(ctx context.Context) {
 	for _, tailer := range r.tailers {
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		events, errs := tailer.Poll()
 		for _, err := range errs {
-			r.errorCount.Add(1)
-			r.logger.Printf("collector error: %v", err)
-			_, _ = r.journal.Append("collector.error", map[string]string{"error": err.Error()})
+			r.recordCollectorError("file-tail", err)
 		}
 		for _, event := range events {
 			if _, err := r.process(event); err != nil {
@@ -142,6 +182,38 @@ func (r *Runtime) poll() {
 			}
 		}
 	}
+}
+
+func (r *Runtime) collectInventory(ctx context.Context, force bool) {
+	if r.inventoryCollector == nil || ctx.Err() != nil {
+		return
+	}
+	lastNano := r.lastInventoryNano.Load()
+	if !force && lastNano != 0 && time.Since(time.Unix(0, lastNano)) < r.inventoryInterval {
+		return
+	}
+	event, err := r.inventoryCollector.Event(ctx)
+	if err != nil {
+		r.recordCollectorError("native-inventory", err)
+		return
+	}
+	if _, err := r.process(event); err != nil {
+		r.recordCollectorError("native-inventory", err)
+		return
+	}
+	collectedAt := time.Now().UTC()
+	r.lastInventoryNano.Store(collectedAt.UnixNano())
+	r.inventoryCount.Add(1)
+	r.logger.Printf("asset inventory collected processes=%t services=%t listeners=%t software=%t", r.cfg.Inventory.IncludeProcesses, r.cfg.Inventory.IncludeServices, r.cfg.Inventory.IncludeListeners, r.cfg.Inventory.IncludeSoftware)
+}
+
+func (r *Runtime) recordCollectorError(collector string, err error) {
+	if err == nil {
+		return
+	}
+	r.errorCount.Add(1)
+	r.logger.Printf("collector error collector=%s error=%v", collector, err)
+	_, _ = r.journal.Append("collector.error", map[string]string{"collector": collector, "error": err.Error()})
 }
 
 func (r *Runtime) Ingest(_ context.Context, event model.Event) ([]model.Finding, error) {
@@ -173,20 +245,33 @@ func (r *Runtime) process(event model.Event) ([]model.Finding, error) {
 }
 
 func (r *Runtime) Status() Status {
+	sourceCount := len(r.tailers)
+	if r.inventoryCollector != nil {
+		sourceCount++
+	}
+	var lastInventoryAt *time.Time
+	if lastNano := r.lastInventoryNano.Load(); lastNano != 0 {
+		value := time.Unix(0, lastNano).UTC()
+		lastInventoryAt = &value
+	}
 	return Status{
-		Status:      "running",
-		AgentID:     r.cfg.AgentID,
-		TenantID:    r.cfg.TenantID,
-		Hostname:    r.hostname,
-		StartedAt:   r.startedAt,
-		Uptime:      time.Since(r.startedAt).Round(time.Second).String(),
-		Events:      r.eventCount.Load(),
-		Findings:    r.findingCount.Load(),
-		Errors:      r.errorCount.Load(),
-		Sources:     len(r.tailers),
-		AIEnabled:   r.cfg.AI.Enabled,
-		Build:       buildinfo.Current(),
-		SafetyModel: "AI may analyze evidence; only typed tools behind deterministic policy may act",
+		Status:            "running",
+		AgentID:           r.cfg.AgentID,
+		TenantID:          r.cfg.TenantID,
+		Hostname:          r.hostname,
+		StartedAt:         r.startedAt,
+		Uptime:            time.Since(r.startedAt).Round(time.Second).String(),
+		Events:            r.eventCount.Load(),
+		Findings:          r.findingCount.Load(),
+		Errors:            r.errorCount.Load(),
+		Sources:           sourceCount,
+		AIEnabled:         r.cfg.AI.Enabled,
+		InventoryEnabled:  r.inventoryCollector != nil,
+		InventoryRuns:     r.inventoryCount.Load(),
+		LastInventoryAt:   lastInventoryAt,
+		InventoryInterval: r.cfg.Inventory.Interval,
+		Build:             buildinfo.Current(),
+		SafetyModel:       "AI may analyze evidence; only typed tools behind deterministic policy may act",
 	}
 }
 
