@@ -1,0 +1,404 @@
+name: Finalize secure enrollment and mTLS transport
+
+on:
+  push:
+    branches:
+      - feat/secure-enrollment-transport
+    paths:
+      - .github/workflows/finalize-secure-enrollment.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/secure-enrollment-transport
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Rebase on validated inventory-drift main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          if ! git cat-file -e origin/main:agent/internal/inventorydrift/store.go 2>/dev/null; then
+            echo 'main does not contain the merged inventory-drift milestone' >&2
+            exit 1
+          fi
+          git rebase origin/main
+
+      - name: Harden cross-process state and local identity validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          tokens_path = Path('agent/internal/gateway/tokens.go')
+          tokens = tokens_path.read_text()
+          if 'acquireTokenFileLock(s.path' not in tokens:
+              create_needle = '''\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\tcandidate := pruneTokens(s.entries, now)
+'''
+              create_replacement = '''\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\trelease, err := acquireTokenFileLock(s.path, 5*time.Second)
+\tif err != nil {
+\t\treturn CreatedToken{}, err
+\t}
+\tdefer release()
+\tif err := s.reloadLocked(); err != nil {
+\t\treturn CreatedToken{}, err
+\t}
+\tcandidate := pruneTokens(s.entries, now)
+'''
+              if create_needle not in tokens:
+                  raise SystemExit('token Create insertion point not found')
+              tokens = tokens.replace(create_needle, create_replacement, 1)
+              redeem_needle = '''\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\tindex := -1
+'''
+              redeem_replacement = '''\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\trelease, err := acquireTokenFileLock(s.path, 5*time.Second)
+\tif err != nil {
+\t\treturn RedeemedToken{}, err
+\t}
+\tdefer release()
+\tif err := s.reloadLocked(); err != nil {
+\t\treturn RedeemedToken{}, err
+\t}
+\tindex := -1
+'''
+              if redeem_needle not in tokens:
+                  raise SystemExit('token Redeem insertion point not found')
+              tokens = tokens.replace(redeem_needle, redeem_replacement, 1)
+          if 'DecodeString(entry.TokenSHA256)' not in tokens:
+              validation_needle = '''\tif len(entry.ID) != 24 || len(entry.TokenSHA256) != 64 {
+\t\treturn errors.New("enrollment token store contains an invalid token identifier or hash")
+\t}
+'''
+              validation_replacement = validation_needle + '''\tif _, err := hex.DecodeString(entry.ID); err != nil {
+\t\treturn errors.New("enrollment token store contains a non-hex token identifier")
+\t}
+\tif _, err := hex.DecodeString(entry.TokenSHA256); err != nil {
+\t\treturn errors.New("enrollment token store contains a non-hex token hash")
+\t}
+'''
+              if validation_needle not in tokens:
+                  raise SystemExit('token validation insertion point not found')
+              tokens = tokens.replace(validation_needle, validation_replacement, 1)
+          tokens_path.write_text(tokens)
+
+          pki_path = Path('agent/internal/gateway/pki.go')
+          pki = pki_path.read_text()
+          old_write = '''func writePrivateFile(path string, content []byte) error {
+\tif err := os.WriteFile(path, content, 0o600); err != nil {
+\t\treturn fmt.Errorf("write %s: %w", filepath.Base(path), err)
+\t}
+\tif err := os.Chmod(path, 0o600); err != nil {
+\t\treturn fmt.Errorf("secure %s: %w", filepath.Base(path), err)
+\t}
+\treturn nil
+}
+'''
+          new_write = '''func writePrivateFile(path string, content []byte) error {
+\tif err := atomicPrivateWrite(path, content); err != nil {
+\t\treturn fmt.Errorf("write %s: %w", filepath.Base(path), err)
+\t}
+\treturn nil
+}
+'''
+          if old_write in pki:
+              pki = pki.replace(old_write, new_write, 1)
+          pki_path.write_text(pki)
+
+          enrollment_client_path = Path('agent/internal/enrollment/client.go')
+          enrollment_client = enrollment_client_path.read_text()
+          if 'expectedSPIFFEURI' not in enrollment_client:
+              old_metadata = '''\tmetadata := Metadata{
+\t\tVersion:           ProtocolVersion,
+\t\tTenantID:          tenantID,
+\t\tAgentID:           certificateAgentID,
+\t\tSPIFFEID:          certificate.URIs[0].String(),
+'''
+              new_metadata = '''\texpectedSPIFFEURI, err := SPIFFEURI(tenantID, certificateAgentID)
+\tif err != nil {
+\t\treturn Metadata{}, nil, nil, err
+\t}
+\tmetadata := Metadata{
+\t\tVersion:           ProtocolVersion,
+\t\tTenantID:          tenantID,
+\t\tAgentID:           certificateAgentID,
+\t\tSPIFFEID:          expectedSPIFFEURI.String(),
+'''
+              if old_metadata not in enrollment_client:
+                  raise SystemExit('enrollment metadata insertion point not found')
+              enrollment_client = enrollment_client.replace(old_metadata, new_metadata, 1)
+          enrollment_client_path.write_text(enrollment_client)
+
+          transport_client_path = Path('agent/internal/transport/client.go')
+          transport_client = transport_client_path.read_text()
+          if '\t"encoding/pem"\n' not in transport_client:
+              transport_client = transport_client.replace('\t"encoding/json"\n', '\t"encoding/json"\n\t"encoding/pem"\n', 1)
+          if 'verifyLocalIdentity' not in transport_client:
+              certificate_load = '''\tcertificate, err := tls.LoadX509KeyPair(paths.Certificate, paths.PrivateKey)
+\tif err != nil {
+\t\treturn nil, fmt.Errorf("load endpoint certificate and key: %w", err)
+\t}
+'''
+              certificate_replacement = certificate_load + '''\tif err := verifyLocalIdentity(certificate, metadata); err != nil {
+\t\treturn nil, err
+\t}
+'''
+              if certificate_load not in transport_client:
+                  raise SystemExit('transport certificate insertion point not found')
+              transport_client = transport_client.replace(certificate_load, certificate_replacement, 1)
+              transport_client += '''
+
+func verifyLocalIdentity(keyPair tls.Certificate, metadata enrollment.Metadata) error {
+\tif len(keyPair.Certificate) == 0 {
+\t\treturn errors.New("endpoint certificate chain is empty")
+\t}
+\tcertificate, err := x509.ParseCertificate(keyPair.Certificate[0])
+\tif err != nil {
+\t\treturn fmt.Errorf("parse endpoint certificate: %w", err)
+\t}
+\ttenantID, agentID, err := enrollment.ParseSPIFFEIdentity(certificate)
+\tif err != nil {
+\t\treturn err
+\t}
+\tif tenantID != metadata.TenantID || agentID != metadata.AgentID {
+\t\treturn errors.New("endpoint certificate identity does not match enrollment metadata")
+\t}
+\tif time.Now().UTC().After(certificate.NotAfter) {
+\t\treturn errors.New("endpoint certificate has expired")
+\t}
+\tif metadata.CertificateSerial != "" && certificate.SerialNumber.String() != metadata.CertificateSerial {
+\t\treturn errors.New("endpoint certificate serial does not match enrollment metadata")
+\t}
+\treturn nil
+}
+
+func firstCertificate(content []byte) (*x509.Certificate, error) {
+\tfor len(content) > 0 {
+\t\tblock, rest := pem.Decode(content)
+\t\tif block == nil {
+\t\t\tbreak
+\t\t}
+\t\tcontent = rest
+\t\tif block.Type != "CERTIFICATE" {
+\t\t\tcontinue
+\t\t}
+\t\treturn x509.ParseCertificate(block.Bytes)
+\t}
+\treturn nil, errors.New("certificate PEM contains no certificate")
+}
+'''
+          if 'control-plane CA fingerprint does not match' not in transport_client:
+              ca_needle = '''\troots := x509.NewCertPool()
+\tif !roots.AppendCertsFromPEM(caContent) {
+\t\treturn nil, errors.New("control-plane CA file contains no certificate")
+\t}
+'''
+              ca_replacement = ca_needle + '''\tcaCertificate, err := firstCertificate(caContent)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tif metadata.CAFingerprint != "" && enrollment.CertificateFingerprint(caCertificate) != metadata.CAFingerprint {
+\t\treturn nil, errors.New("control-plane CA fingerprint does not match enrollment metadata")
+\t}
+'''
+              if ca_needle not in transport_client:
+                  raise SystemExit('transport CA insertion point not found')
+              transport_client = transport_client.replace(ca_needle, ca_replacement, 1)
+          transport_client_path.write_text(transport_client)
+
+          server_path = Path('agent/internal/gateway/server.go')
+          server = server_path.read_text()
+          if 'request content type must be application/json' not in server:
+              decode_needle = '''func decodeStrictJSON(response http.ResponseWriter, request *http.Request, maximum int64, target interface{}) error {
+\trequest.Body = http.MaxBytesReader(response, request.Body, maximum)
+'''
+              decode_replacement = '''func decodeStrictJSON(response http.ResponseWriter, request *http.Request, maximum int64, target interface{}) error {
+\tcontentType := strings.ToLower(strings.TrimSpace(strings.Split(request.Header.Get("Content-Type"), ";")[0]))
+\tif contentType != "application/json" {
+\t\treturn errors.New("request content type must be application/json")
+\t}
+\trequest.Body = http.MaxBytesReader(response, request.Body, maximum)
+'''
+              if decode_needle not in server:
+                  raise SystemExit('strict JSON insertion point not found')
+              server = server.replace(decode_needle, decode_replacement, 1)
+          if 'if err := batch.Validate(); err != nil {' not in server.split('func (s *Server) handleEvents', 1)[1].split('func (s *Server) securityHeaders', 1)[0]:
+              identity_needle = '''\tif batch.TenantID != tenantID || batch.AgentID != agentID {
+\t\twriteAPIError(response, http.StatusForbidden, "batch_certificate_identity_mismatch")
+\t\treturn
+\t}
+'''
+              identity_replacement = identity_needle + '''\tif err := batch.Validate(); err != nil {
+\t\twriteAPIError(response, http.StatusBadRequest, "invalid_evidence_batch")
+\t\treturn
+\t}
+'''
+              if identity_needle not in server:
+                  raise SystemExit('batch validation insertion point not found')
+              server = server.replace(identity_needle, identity_replacement, 1)
+          old_default = '''\t\tdefault:
+\t\t\ts.logger.Printf("evidence batch rejected tenant_id=%s agent_id=%s sequence=%d reason=%v", tenantID, agentID, batch.Sequence, err)
+\t\t\twriteAPIError(response, http.StatusBadRequest, "invalid_evidence_batch")
+'''
+          new_default = '''\t\tdefault:
+\t\t\ts.logger.Printf("evidence batch persistence failed tenant_id=%s agent_id=%s sequence=%d reason=%v", tenantID, agentID, batch.Sequence, err)
+\t\t\twriteAPIError(response, http.StatusInternalServerError, "evidence_persistence_failed")
+'''
+          if old_default in server:
+              server = server.replace(old_default, new_default, 1)
+          server_path.write_text(server)
+
+          state_path = Path('agent/internal/gateway/state.go')
+          state = state_path.read_text()
+          if 'internal/enrollment' not in state:
+              state = state.replace('\t"github.com/paddman/NTAgentShield/internal/transport"\n', '\t"github.com/paddman/NTAgentShield/internal/enrollment"\n\t"github.com/paddman/NTAgentShield/internal/transport"\n', 1)
+          if 'ValidateIdentity("tenant_id", agent.TenantID)' not in state:
+              cursor_needle = '''\tfor _, agent := range envelope.Agents {
+\t\tif agent.TenantID == "" || agent.AgentID == "" || agent.Sequence == 0 || len(agent.LastHash) != 64 {
+\t\t\treturn nil, errors.New("gateway sequence state contains an invalid agent cursor")
+\t\t}
+'''
+              cursor_replacement = '''\tfor _, agent := range envelope.Agents {
+\t\tif err := enrollment.ValidateIdentity("tenant_id", agent.TenantID); err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t\tif err := enrollment.ValidateIdentity("agent_id", agent.AgentID); err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t\tif agent.Sequence == 0 || len(agent.LastHash) != 64 {
+\t\t\treturn nil, errors.New("gateway sequence state contains an invalid agent cursor")
+\t\t}
+\t\tif _, err := hex.DecodeString(agent.LastHash); err != nil {
+\t\t\treturn nil, errors.New("gateway sequence state contains a non-hex batch hash")
+\t\t}
+'''
+              if cursor_needle not in state:
+                  raise SystemExit('gateway cursor validation insertion point not found')
+              state = state.replace(cursor_needle, cursor_replacement, 1)
+          if 'gateway sequence state reached its agent limit' in state and 'if !exists && len(s.agents) >= maxGatewayAgents' not in state:
+              append_needle = '''\trecord := acceptedRecord{ReceivedAt: now, ClientCertSerial: clientCertSerial, Batch: batch}
+\tif err := s.appendRecord(record); err != nil {
+'''
+              append_replacement = '''\tif !exists && len(s.agents) >= maxGatewayAgents {
+\t\treturn transport.Receipt{}, errors.New("gateway sequence state reached its agent limit")
+\t}
+\trecord := acceptedRecord{ReceivedAt: now, ClientCertSerial: clientCertSerial, Batch: batch}
+\tif err := s.appendRecord(record); err != nil {
+'''
+              if append_needle not in state:
+                  raise SystemExit('gateway agent-limit insertion point not found')
+              state = state.replace(append_needle, append_replacement, 1)
+          state_path.write_text(state)
+
+          server_test_path = Path('agent/internal/gateway/server_test.go')
+          server_test = server_test_path.read_text()
+          server_test = server_test.replace('func trustedHTTPClient(t *testing.T, caPath string, certificate *tls.Certificate) *http.Transport {', 'func trustedHTTPClient(t *testing.T, caPath string, certificate *tls.Certificate) *http.Client {')
+          server_test = server_test.replace('return &http.Transport{TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}\n}', 'return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}, Timeout: 10 * time.Second}\n}')
+          server_test_path.write_text(server_test)
+
+          readme_path = Path('agent/README.md')
+          readme = readme_path.read_text()
+          marker = '## Secure enrollment and mutual-TLS evidence transport'
+          if marker not in readme:
+              readme += '''
+
+## Secure enrollment and mutual-TLS evidence transport
+
+Endpoints generate an ECDSA P-256 key locally, enroll with a tenant-bound hash-only token, receive a client certificate carrying an NTAgentShield SPIFFE URI, and submit sequence/hash-chained evidence batches over TLS 1.3 mutual authentication. The gateway rejects certificate/body identity mismatches, replay forks, sequence gaps and incorrect previous hashes. See [Secure Enrollment](docs/SECURE_ENROLLMENT.md).
+'''
+              readme_path.write_text(readme)
+          PY
+
+      - name: Format and validate repository text
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w \
+            agent/internal/enrollment/*.go \
+            agent/internal/transport/*.go \
+            agent/internal/gateway/*.go \
+            agent/cmd/ntagentshield-ca/*.go \
+            agent/cmd/ntagentshield-gateway/*.go \
+            agent/cmd/ntagentshield-enroll/*.go \
+            agent/cmd/ntagentshield-send/*.go
+          rm -f .github/workflows/finalize-secure-enrollment.yml
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          for path in Path('agent/config').glob('*.json'):
+              json.loads(path.read_text())
+          PY
+
+      - name: Go tests, vet, race, and cross-builds
+        shell: bash
+        working-directory: agent
+        run: |
+          set -euo pipefail
+          go test ./...
+          go vet ./...
+          go test -race ./...
+          for command in \
+            ntagentshield-agent \
+            ntagentshieldctl \
+            ntagentshield-inventory \
+            ntagentshield-ca \
+            ntagentshield-gateway \
+            ntagentshield-enroll \
+            ntagentshield-send; do
+            go build -o "/tmp/${command}" "./cmd/${command}"
+            GOOS=windows GOARCH=amd64 go build -o "/tmp/${command}.exe" "./cmd/${command}"
+            GOOS=linux GOARCH=arm64 go build -o "/tmp/${command}-linux-arm64" "./cmd/${command}"
+          done
+
+      - name: Verify systemd unit when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v systemd-analyze >/dev/null 2>&1; then
+            systemd-analyze verify agent/packaging/systemd/ntagentshield-gateway.service
+          fi
+
+      - name: Python control-plane tests and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          ruff check src tests
+          pytest --cov=ntshield --cov-report=term-missing
+
+      - name: Commit validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m 'feat: secure tenant-bound enrollment and mTLS evidence gateway'
+          git push --force-with-lease origin HEAD:feat/secure-enrollment-transport
