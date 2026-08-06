@@ -3,6 +3,7 @@ package native
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -31,13 +32,16 @@ func TestCursorCommitAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("cursor permissions are too broad: %o", info.Mode().Perm())
 	}
 }
 
 func TestCursorRejectsCorruptionAndIdentityMismatch(t *testing.T) {
 	directory := t.TempDir()
+	if _, err := openCursor(directory, "../escape", "journald"); err == nil {
+		t.Fatal("expected unsafe cursor source ID to be rejected")
+	}
 	cursorDirectory := filepath.Join(directory, "cursors")
 	if err := os.MkdirAll(cursorDirectory, 0o700); err != nil {
 		t.Fatal(err)
