@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paddman/NTAgentShield/internal/redact"
 )
 
 func TestParseAuditFieldsAndNormalizeExecve(t *testing.T) {
@@ -26,6 +28,32 @@ func TestParseAuditFieldsAndNormalizeExecve(t *testing.T) {
 	}
 	if event.ID != auditLineToEvent("linux-audit", "/var/log/audit/audit.log", line).ID {
 		t.Fatal("audit event ID must be deterministic")
+	}
+
+	audit, ok := event.Attributes["audit"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected audit attributes: %#v", event.Attributes)
+	}
+	evidenceFields, ok := audit["fields"].(map[string]string)
+	if !ok {
+		t.Fatalf("unexpected evidence field type: %#v", audit["fields"])
+	}
+	for _, key := range []string{"a0", "a1", "a2", "cmd", "command", "proctitle"} {
+		if _, exists := evidenceFields[key]; exists {
+			t.Fatalf("raw command argument %q leaked into evidence fields", key)
+		}
+	}
+	lineHash, ok := audit["line_sha256"].(string)
+	if !ok || len(lineHash) != 64 {
+		t.Fatalf("raw audit line was not replaced by a SHA-256 digest: %#v", audit["line_sha256"])
+	}
+	if strings.Contains(event.Message, "audit-secret") {
+		t.Fatalf("raw audit argument leaked into event message: %q", event.Message)
+	}
+
+	redact.Event(&event)
+	if strings.Contains(event.Process.CommandLine, "audit-secret") {
+		t.Fatalf("normalized command-line secret was not redacted: %q", event.Process.CommandLine)
 	}
 }
 
