@@ -136,8 +136,9 @@ func auditLineToEvent(sourceID, path, line string) model.Event {
 	commandLine := auditCommandLine(fields)
 	filePath := firstValue(fields["name"], fields["path"])
 	digest := sha256.Sum256([]byte(line))
+	lineHash := hex.EncodeToString(digest[:])
 	event := model.Event{
-		ID:        deterministicEventID("auditd", sourceID, serial, typeName, hex.EncodeToString(digest[:])),
+		ID:        deterministicEventID("auditd", sourceID, serial, typeName, lineHash),
 		Timestamp: timestamp,
 		Kind:      kind,
 		Severity:  auditSeverity(typeName, fields),
@@ -164,12 +165,13 @@ func auditLineToEvent(sourceID, path, line string) model.Event {
 			Operation:  auditFileOperation(fields["nametype"], kind),
 			Executable: auditExecutablePath(filePath),
 		},
-		Message: line,
+		Message: fmt.Sprintf("Linux audit event %s serial=%s", typeName, serial),
 		Attributes: map[string]interface{}{
 			"audit": map[string]interface{}{
-				"type":   typeName,
-				"serial": serial,
-				"fields": fields,
+				"type":        typeName,
+				"serial":      serial,
+				"line_sha256": lineHash,
+				"fields":      auditEvidenceFields(fields),
 			},
 		},
 		Provenance: model.Provenance{
@@ -197,6 +199,22 @@ func parseAuditFields(line string) map[string]string {
 			value = strings.Trim(value, "'")
 		}
 		result[match[1]] = value
+	}
+	return result
+}
+
+func auditEvidenceFields(fields map[string]string) map[string]string {
+	result := make(map[string]string, len(fields))
+	for key, value := range fields {
+		if auditArgumentKey.MatchString(key) {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "cmd", "command", "proctitle":
+			continue
+		default:
+			result[key] = value
+		}
 	}
 	return result
 }
