@@ -1,0 +1,31 @@
+id: BZH-DB-001
+title: Large sensitive database read followed by outbound transfer
+description: A large query against sensitive data is followed by substantial external egress from the same asset.
+enabled: true
+severity: critical
+base_score: 80
+confidence: 0.86
+window_seconds: 900
+group_by: [tenant_id, asset.id]
+reason_codes: [SENSITIVE_BULK_READ, LARGE_EXTERNAL_EGRESS]
+mitre:
+  - tactic: Collection
+    technique_id: T1213
+    technique: Data from Information Repositories
+  - tactic: Exfiltration
+    technique_id: T1041
+    technique: Exfiltration Over C2 Channel
+steps:
+  - id: bulk_sensitive_query
+    description: Query returns a large amount of sensitive data
+    match:
+      event_type: database.query
+      database.rows|gte: 10000
+      database.sensitivity|in: [high, restricted, pii, secret]
+  - id: external_transfer
+    description: Host sends a large amount of data externally
+    within_seconds: 600
+    match:
+      event_type: network.connect
+      network.is_external: true
+      network.bytes_out|gte: 50000000

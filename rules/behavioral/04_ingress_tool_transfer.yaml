@@ -1,0 +1,36 @@
+id: BZH-DOWNLOAD-001
+title: Uncommon process downloads and executes a new payload
+description: A command-capable process reaches the Internet, writes a file into a staging path, and executes from a user-writable location.
+enabled: true
+severity: high
+base_score: 70
+confidence: 0.86
+window_seconds: 420
+group_by: [tenant_id, asset.id]
+reason_codes: [UNCOMMON_DOWNLOADER, STAGED_PAYLOAD, EXECUTE_FROM_WRITABLE_PATH]
+mitre:
+  - tactic: Command and Control
+    technique_id: T1105
+    technique: Ingress Tool Transfer
+  - tactic: Execution
+    technique_id: T1204.002
+    technique: Malicious File
+steps:
+  - id: downloader_egress
+    description: A command-capable process connects externally
+    match:
+      event_type: network.connect
+      process.name|in: [powershell.exe, pwsh.exe, certutil.exe, bitsadmin.exe, curl.exe, wget, curl, python, python3, mshta.exe]
+      network.is_external: true
+  - id: staged_file
+    description: A file appears in a user-writable staging path
+    within_seconds: 180
+    match:
+      event_type: file.create
+      file.path|one_of_contains: [/tmp/, /var/tmp/, appdata, users/public, programdata, windows/temp, downloads]
+  - id: staged_execution
+    description: A process starts from a user-writable staging path
+    within_seconds: 180
+    match:
+      event_type: process.start
+      process.path|one_of_contains: [/tmp/, /var/tmp/, appdata, users/public, programdata, windows/temp, downloads]

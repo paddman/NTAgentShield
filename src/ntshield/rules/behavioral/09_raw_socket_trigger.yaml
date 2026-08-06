@@ -1,0 +1,31 @@
+id: BZH-RAWSOCK-001
+title: Raw-socket capability followed by reverse connection
+description: A non-network service opens a raw socket and soon initiates an external connection, a pattern worth hunting for covert trigger channels.
+enabled: true
+severity: high
+base_score: 72
+confidence: 0.72
+window_seconds: 300
+group_by: [tenant_id, asset.id]
+minimum_anomaly_score: 15
+reason_codes: [RAW_SOCKET_OPEN, REVERSE_CONNECTION]
+mitre:
+  - tactic: Command and Control
+    technique_id: T1205.002
+    technique: Socket Filters
+steps:
+  - id: raw_socket
+    description: Process opens AF_PACKET or SOCK_RAW
+    match:
+      event_type: network.raw_socket_open
+      process.name|not_in: [tcpdump, dumpcap, wireshark, dhclient, keepalived, lldpd, zeek, suricata]
+    bind:
+      process_pid: process.pid
+  - id: reverse_connection
+    description: Same host initiates an external connection shortly afterward
+    within_seconds: 180
+    match:
+      event_type: network.connect
+      network.is_external: true
+    where:
+      process.pid: $process_pid

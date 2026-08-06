@@ -1,0 +1,35 @@
+id: BZH-RANSOM-001
+title: Ransomware precursor behavior chain
+description: A script interpreter attempts to inhibit recovery and is followed by high-volume file modification.
+enabled: true
+severity: critical
+base_score: 88
+confidence: 0.94
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [SCRIPT_EXECUTION, RECOVERY_INHIBITION, MASS_FILE_MODIFICATION]
+mitre:
+  - tactic: Impact
+    technique_id: T1490
+    technique: Inhibit System Recovery
+  - tactic: Impact
+    technique_id: T1486
+    technique: Data Encrypted for Impact
+steps:
+  - id: script_start
+    description: Command or scripting interpreter starts
+    match:
+      event_type: process.start
+      process.name|in: [powershell.exe, pwsh.exe, cmd.exe, wscript.exe, cscript.exe, sh, bash, python, python3]
+  - id: recovery_inhibit
+    description: Command attempts to remove backups or snapshots
+    within_seconds: 300
+    match:
+      event_type: process.start
+      process.command_line|one_of_contains: [vssadmin delete shadows, wbadmin delete catalog, bcdedit /set, delete snapshot, lvremove, zfs destroy]
+  - id: mass_modify
+    description: A process modifies many files rapidly
+    within_seconds: 300
+    match:
+      event_type: file.mass_modify
+      file.count|gte: 100

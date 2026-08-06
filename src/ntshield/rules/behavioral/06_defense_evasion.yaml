@@ -1,0 +1,34 @@
+id: BZH-EVASION-001
+title: Security controls impaired before suspicious egress
+description: A security control is disabled, logs are cleared or tampered with, and a process then connects externally.
+enabled: true
+severity: critical
+base_score: 84
+confidence: 0.92
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [SECURITY_CONTROL_DISABLED, LOG_TAMPERING, POST_EVASION_EGRESS]
+mitre:
+  - tactic: Defense Evasion
+    technique_id: T1562.001
+    technique: Impair Defenses
+  - tactic: Defense Evasion
+    technique_id: T1070.001
+    technique: Clear Windows Event Logs
+steps:
+  - id: control_disabled
+    description: Endpoint security or audit control disabled
+    match:
+      event_type|in: [security.control_change, security.agent_stop]
+      action|in: [disable, stop, tamper]
+  - id: logs_tampered
+    description: Audit log cleared or modified
+    within_seconds: 300
+    match:
+      event_type|in: [security.log_clear, log.tamper]
+  - id: egress
+    description: External connection after defenses were impaired
+    within_seconds: 300
+    match:
+      event_type: network.connect
+      network.is_external: true
