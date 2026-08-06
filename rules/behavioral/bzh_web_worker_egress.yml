@@ -1,0 +1,36 @@
+id: BZH-WEB-002
+title: Web worker spawned an interpreter that established external egress
+description: Short behavior chain for server-side command execution where file telemetry is unavailable.
+enabled: true
+severity: high
+confidence: 0.89
+window_seconds: 45
+ordered: true
+group_by: [tenant_id, asset_id]
+tags:
+  - behavioral-zero-day
+  - web-exploitation
+  - attack.t1059
+  - attack.t1071
+steps:
+  - name: web_worker_spawns_interpreter
+    event_types: [process.start]
+    where:
+      - field: parent_process.name
+        op: regex
+        value: '^(w3wp|httpd|apache2|nginx|php-fpm|java|tomcat[0-9]*|node)(\.exe)?$'
+      - field: process.name
+        op: regex
+        value: '^(cmd|powershell|pwsh|sh|bash|python[0-9.]*|perl|curl|wget)(\.exe)?$'
+  - name: suspicious_file_write
+    event_types: [file.write]
+    where:
+      - field: file.path
+        op: regex
+        value: '(?i)(/tmp|/dev/shm|inetpub|wwwroot|/var/www|uploads|app_data)'
+  - name: outbound_connection
+    event_types: [network.connect]
+    where:
+      - field: network.dst.ip
+        op: is_public_ip
+        value: true

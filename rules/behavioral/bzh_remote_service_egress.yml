@@ -1,0 +1,34 @@
+id: BZH-SVC-001
+title: Newly installed service launched and contacted an external destination
+description: Correlates service creation, first execution, and egress to detect persistence or lateral movement even when the binary hash is unknown.
+enabled: true
+severity: high
+confidence: 0.9
+window_seconds: 300
+ordered: true
+group_by: [tenant_id, asset_id]
+tags:
+  - behavioral-zero-day
+  - persistence
+  - lateral-movement
+  - attack.t1543.003
+  - attack.t1021
+steps:
+  - name: service_installed
+    event_types: [service.install]
+    where:
+      - field: service.image_path
+        op: exists
+        value: true
+  - name: service_process_started
+    event_types: [process.start]
+    where:
+      - field: parent_process.name
+        op: regex
+        value: '^(services|systemd|init)(\.exe)?$'
+  - name: service_external_egress
+    event_types: [network.connect]
+    where:
+      - field: network.dst.ip
+        op: is_public_ip
+        value: true
