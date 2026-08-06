@@ -9,11 +9,17 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/paddman/NTAgentShield/internal/model"
+)
+
+var (
+	nativeSourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	windowsChannelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/ -]{0,127}$`)
 )
 
 type Source struct {
@@ -24,6 +30,20 @@ type Source struct {
 	Trust     model.TrustLevel `json:"trust"`
 	FromStart bool             `json:"from_start"`
 	MaxBatch  int              `json:"max_batch"`
+}
+
+type NativeSource struct {
+	ID             string   `json:"id"`
+	Enabled        bool     `json:"enabled"`
+	Kind           string   `json:"kind"`
+	Channel        string   `json:"channel,omitempty"`
+	EventIDs       []int    `json:"event_ids,omitempty"`
+	Units          []string `json:"units,omitempty"`
+	Identifiers    []string `json:"identifiers,omitempty"`
+	Path           string   `json:"path,omitempty"`
+	FromStart      bool     `json:"from_start"`
+	MaxBatch       int      `json:"max_batch"`
+	CommandTimeout string   `json:"command_timeout"`
 }
 
 type API struct {
@@ -64,6 +84,7 @@ type Config struct {
 	PollInterval time.Duration `json:"-"`
 	Poll         string        `json:"poll_interval"`
 	Sources      []Source      `json:"sources"`
+	NativeSources []NativeSource `json:"native_sources"`
 	API          API           `json:"api"`
 	Tools        ToolPolicy    `json:"tools"`
 	AI           AI            `json:"ai"`
@@ -164,6 +185,28 @@ func (c *Config) applyDefaults(configPath string) {
 			c.Sources[i].Path = filepath.Clean(filepath.Join(base, c.Sources[i].Path))
 		}
 	}
+	for i := range c.NativeSources {
+		source := &c.NativeSources[i]
+		source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
+		if source.MaxBatch <= 0 {
+			source.MaxBatch = 256
+		}
+		if source.CommandTimeout == "" {
+			source.CommandTimeout = "15s"
+		}
+		if (source.Kind == "auditd" || source.Kind == "linux_auditd") && source.Path == "" {
+			source.Path = "/var/log/audit/audit.log"
+		}
+		if source.Path != "" && !filepath.IsAbs(source.Path) {
+			source.Path = filepath.Clean(filepath.Join(base, source.Path))
+		}
+		for unitIndex := range source.Units {
+			source.Units[unitIndex] = strings.TrimSpace(source.Units[unitIndex])
+		}
+		for identifierIndex := range source.Identifiers {
+			source.Identifiers[identifierIndex] = strings.TrimSpace(source.Identifiers[identifierIndex])
+		}
+	}
 	for i, path := range c.Tools.AllowedPaths {
 		if !filepath.IsAbs(path) {
 			c.Tools.AllowedPaths[i] = filepath.Clean(filepath.Join(base, path))
@@ -227,6 +270,57 @@ func (c Config) Validate() error {
 			return fmt.Errorf("duplicate source id %q", source.ID)
 		}
 		seen[source.ID] = struct{}{}
+	}
+	for _, source := range c.NativeSources {
+		if !source.Enabled {
+			continue
+		}
+		if !nativeSourceIDPattern.MatchString(source.ID) {
+			return fmt.Errorf("native source id %q must match %s", source.ID, nativeSourceIDPattern.String())
+		}
+		if _, ok := seen[source.ID]; ok {
+			return fmt.Errorf("duplicate source id %q", source.ID)
+		}
+		seen[source.ID] = struct{}{}
+		if source.MaxBatch < 1 || source.MaxBatch > 5000 {
+			return fmt.Errorf("native source %s max_batch must be between 1 and 5000", source.ID)
+		}
+		timeout, err := time.ParseDuration(source.CommandTimeout)
+		if err != nil {
+			return fmt.Errorf("native source %s command_timeout: %w", source.ID, err)
+		}
+		if timeout < time.Second || timeout > 2*time.Minute {
+			return fmt.Errorf("native source %s command_timeout must be between 1s and 2m", source.ID)
+		}
+		switch source.Kind {
+		case "windows_eventlog", "wineventlog", "sysmon":
+			if !windowsChannelPattern.MatchString(source.Channel) {
+				return fmt.Errorf("native source %s has invalid Windows event channel", source.ID)
+			}
+			if len(source.EventIDs) > 128 {
+				return fmt.Errorf("native source %s supports at most 128 event IDs", source.ID)
+			}
+			for _, eventID := range source.EventIDs {
+				if eventID < 1 || eventID > 65535 {
+					return fmt.Errorf("native source %s has invalid event ID %d", source.ID, eventID)
+				}
+			}
+		case "journald", "journalctl":
+			if len(source.Units) > 32 || len(source.Identifiers) > 32 {
+				return fmt.Errorf("native source %s supports at most 32 units and identifiers", source.ID)
+			}
+			for _, value := range append(append([]string{}, source.Units...), source.Identifiers...) {
+				if value == "" || len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
+					return fmt.Errorf("native source %s contains an invalid journald filter", source.ID)
+				}
+			}
+		case "auditd", "linux_auditd":
+			if source.Path == "" || !filepath.IsAbs(source.Path) {
+				return fmt.Errorf("native source %s auditd path must be absolute", source.ID)
+			}
+		default:
+			return fmt.Errorf("native source %s has unsupported kind %q", source.ID, source.Kind)
+		}
 	}
 	return nil
 }

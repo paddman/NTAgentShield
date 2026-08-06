@@ -13,6 +13,44 @@
     "include_software": true,
     "max_items": 1000
   },
+  "native_sources": [
+    {
+      "id": "linux-auth-journal",
+      "enabled": true,
+      "kind": "journald",
+      "identifiers": ["sshd", "sudo"],
+      "from_start": false,
+      "max_batch": 512,
+      "command_timeout": "15s"
+    },
+    {
+      "id": "linux-kernel-journal",
+      "enabled": true,
+      "kind": "journald",
+      "identifiers": ["kernel"],
+      "from_start": false,
+      "max_batch": 256,
+      "command_timeout": "15s"
+    },
+    {
+      "id": "linux-systemd-journal",
+      "enabled": true,
+      "kind": "journald",
+      "identifiers": ["systemd"],
+      "from_start": false,
+      "max_batch": 256,
+      "command_timeout": "15s"
+    },
+    {
+      "id": "linux-audit",
+      "enabled": true,
+      "kind": "auditd",
+      "path": "/var/log/audit/audit.log",
+      "from_start": false,
+      "max_batch": 512,
+      "command_timeout": "15s"
+    }
+  ],
   "sources": [
     {
       "id": "nginx-access",

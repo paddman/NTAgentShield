@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/paddman/NTAgentShield/internal/api"
 	"github.com/paddman/NTAgentShield/internal/buildinfo"
 	"github.com/paddman/NTAgentShield/internal/collector/filetail"
+	"github.com/paddman/NTAgentShield/internal/collector/native"
 	"github.com/paddman/NTAgentShield/internal/config"
 	"github.com/paddman/NTAgentShield/internal/detection"
 	"github.com/paddman/NTAgentShield/internal/inventory"
@@ -27,6 +29,7 @@ type Runtime struct {
 	journal            *store.Journal
 	detector           *detection.Engine
 	tailers            []*filetail.Tailer
+	nativeSources      []native.Source
 	inventoryCollector *inventory.Collector
 	inventoryInterval  time.Duration
 	logger             *log.Logger
@@ -35,6 +38,7 @@ type Runtime struct {
 	findingCount       atomic.Uint64
 	errorCount         atomic.Uint64
 	inventoryCount     atomic.Uint64
+	nativeEventCount   atomic.Uint64
 	lastInventoryNano  atomic.Int64
 }
 
@@ -49,6 +53,9 @@ type Status struct {
 	Findings          uint64         `json:"findings"`
 	Errors            uint64         `json:"errors"`
 	Sources           int            `json:"sources"`
+	FileSources       int            `json:"file_sources"`
+	NativeSources     int            `json:"native_sources"`
+	NativeEvents      uint64         `json:"native_events"`
 	AIEnabled         bool           `json:"ai_enabled"`
 	InventoryEnabled  bool           `json:"inventory_enabled"`
 	InventoryRuns     uint64         `json:"inventory_runs"`
@@ -89,6 +96,21 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 		}
 		runtime.tailers = append(runtime.tailers, tailer)
 	}
+	for _, sourceConfig := range cfg.NativeSources {
+		if !sourceConfig.Enabled {
+			continue
+		}
+		source, err := native.New(sourceConfig, cfg.DataDir)
+		if errors.Is(err, native.ErrUnsupportedPlatform) {
+			logger.Printf("native source skipped id=%s kind=%s reason=%v", sourceConfig.ID, sourceConfig.Kind, err)
+			continue
+		}
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize native source %s: %w", sourceConfig.ID, err)
+		}
+		runtime.nativeSources = append(runtime.nativeSources, source)
+	}
 	if cfg.Inventory.Enabled {
 		interval, err := time.ParseDuration(cfg.Inventory.Interval)
 		if err != nil {
@@ -124,6 +146,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		"tenant_id":          r.cfg.TenantID,
 		"hostname":           r.hostname,
 		"file_sources":       len(r.tailers),
+		"native_sources":     len(r.nativeSources),
 		"inventory_enabled":  r.inventoryCollector != nil,
 		"inventory_interval": r.cfg.Inventory.Interval,
 		"build":              buildinfo.Current(),
@@ -133,7 +156,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
 	}
-	r.logger.Printf("agent started id=%s sources=%d inventory_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), r.inventoryCollector != nil, r.cfg.AI.Enabled)
+	r.logger.Printf("agent started id=%s file_sources=%d native_sources=%d inventory_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), len(r.nativeSources), r.inventoryCollector != nil, r.cfg.AI.Enabled)
 
 	errCh := make(chan error, 1)
 	if r.cfg.API.Enabled {
@@ -167,6 +190,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 }
 
 func (r *Runtime) poll(ctx context.Context) {
+	r.pollFiles(ctx)
+	r.pollNative(ctx)
+}
+
+func (r *Runtime) pollFiles(ctx context.Context) {
 	for _, tailer := range r.tailers {
 		if err := ctx.Err(); err != nil {
 			return
@@ -179,6 +207,32 @@ func (r *Runtime) poll(ctx context.Context) {
 			if _, err := r.process(event); err != nil {
 				r.errorCount.Add(1)
 				r.logger.Printf("event processing error: %v", err)
+			}
+		}
+	}
+}
+
+func (r *Runtime) pollNative(ctx context.Context) {
+	for _, source := range r.nativeSources {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		batch, errs := source.Poll(ctx)
+		for _, err := range errs {
+			r.recordCollectorError(source.Kind()+"/"+source.ID(), err)
+		}
+		processed := true
+		for _, event := range batch.Events {
+			if _, err := r.process(event); err != nil {
+				processed = false
+				r.recordCollectorError(source.Kind()+"/"+source.ID(), err)
+				break
+			}
+			r.nativeEventCount.Add(1)
+		}
+		if processed {
+			if err := batch.Acknowledge(); err != nil {
+				r.recordCollectorError(source.Kind()+"/"+source.ID()+"/cursor", err)
 			}
 		}
 	}
@@ -245,7 +299,7 @@ func (r *Runtime) process(event model.Event) ([]model.Finding, error) {
 }
 
 func (r *Runtime) Status() Status {
-	sourceCount := len(r.tailers)
+	sourceCount := len(r.tailers) + len(r.nativeSources)
 	if r.inventoryCollector != nil {
 		sourceCount++
 	}
@@ -265,6 +319,9 @@ func (r *Runtime) Status() Status {
 		Findings:          r.findingCount.Load(),
 		Errors:            r.errorCount.Load(),
 		Sources:           sourceCount,
+		FileSources:       len(r.tailers),
+		NativeSources:     len(r.nativeSources),
+		NativeEvents:      r.nativeEventCount.Load(),
 		AIEnabled:         r.cfg.AI.Enabled,
 		InventoryEnabled:  r.inventoryCollector != nil,
 		InventoryRuns:     r.inventoryCount.Load(),
