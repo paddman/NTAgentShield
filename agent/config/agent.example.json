@@ -13,6 +13,36 @@
     "include_software": true,
     "max_items": 512
   },
+  "native_sources": [
+    {
+      "id": "demo-windows-security",
+      "enabled": false,
+      "kind": "windows_eventlog",
+      "channel": "Security",
+      "event_ids": [1102, 4624, 4625, 4648, 4672, 4688, 4697, 4698, 4720, 5156, 5157],
+      "from_start": false,
+      "max_batch": 256,
+      "command_timeout": "15s"
+    },
+    {
+      "id": "demo-linux-journal",
+      "enabled": false,
+      "kind": "journald",
+      "identifiers": ["sshd", "sudo"],
+      "from_start": false,
+      "max_batch": 256,
+      "command_timeout": "15s"
+    },
+    {
+      "id": "demo-linux-audit",
+      "enabled": false,
+      "kind": "auditd",
+      "path": "/var/log/audit/audit.log",
+      "from_start": false,
+      "max_batch": 256,
+      "command_timeout": "15s"
+    }
+  ],
   "sources": [
     {
       "id": "demo-iis",
