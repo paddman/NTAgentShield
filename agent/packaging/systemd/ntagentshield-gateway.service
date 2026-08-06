@@ -1,0 +1,50 @@
+[Unit]
+Description=NTAgentShield Mutual-TLS Enrollment and Evidence Gateway
+Documentation=https://github.com/paddman/NTAgentShield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ntagentshield-gateway
+Group=ntagentshield-gateway
+StateDirectory=ntagentshield-gateway
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/ntagentshield-gateway
+ExecStart=/usr/local/bin/ntagentshield-gateway \
+  --state-dir /var/lib/ntagentshield-gateway \
+  --listen 0.0.0.0:9443 \
+  --public-url https://shield-gateway.example.invalid:9443
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/ntagentshield-gateway
+
+[Install]
+WantedBy=multi-user.target
