@@ -1,0 +1,39 @@
+name: Format native inventory sources
+
+on:
+  push:
+    branches:
+      - feat/native-telemetry-inventory
+    paths:
+      - .github/workflows/format-native-inventory.yml
+
+permissions:
+  contents: write
+
+jobs:
+  gofmt:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/native-telemetry-inventory
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+      - name: Format and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w \
+            agent/internal/inventory/platform_windows.go \
+            agent/internal/inventory/types.go
+          rm -f .github/workflows/format-native-inventory.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'style(agent): gofmt native inventory sources'
+          git push origin HEAD:feat/native-telemetry-inventory
