@@ -41,8 +41,10 @@ jobs:
         run: go vet ./...
       - name: Build agent
         run: go build ./cmd/ntagentshield-agent
-      - name: Build CLI
+      - name: Build control CLI
         run: go build ./cmd/ntagentshieldctl
+      - name: Build inventory CLI
+        run: go build ./cmd/ntagentshield-inventory
 
   go-agent-race:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-.PHONY: install dev test lint serve replay docker agent agent-test agent-race agent-fmt test-all
+.PHONY: install dev test lint serve replay docker agent agent-test agent-race agent-fmt agent-inventory test-all
 
 install:
 	python -m pip install .
@@ -22,7 +22,7 @@ docker:
 	docker compose up --build
 
 agent:
-	cd agent && go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl
+	cd agent && go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl ./cmd/ntagentshield-inventory
 
 agent-test:
 	cd agent && go test ./...
@@ -33,5 +33,8 @@ agent-race:
 agent-fmt:
 	@files="$$(cd agent && gofmt -l .)"; \
 	if [ -n "$$files" ]; then echo "Go files require formatting:"; echo "$$files"; exit 1; fi
+
+agent-inventory:
+	cd agent && go run ./cmd/ntagentshield-inventory --max-items 256
 
 test-all: lint test agent-fmt agent-test agent-race agent

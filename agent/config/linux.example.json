@@ -3,6 +3,16 @@
   "tenant_id": "replace-with-tenant-id",
   "data_dir": "/var/lib/ntagentshield",
   "poll_interval": "2s",
+  "inventory": {
+    "enabled": true,
+    "interval": "15m",
+    "command_timeout": "15s",
+    "include_processes": true,
+    "include_services": true,
+    "include_listeners": true,
+    "include_software": true,
+    "max_items": 1000
+  },
   "sources": [
     {
       "id": "nginx-access",
