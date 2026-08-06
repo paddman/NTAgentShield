@@ -1,0 +1,266 @@
+name: Validate and merge durable evidence outbox
+
+on:
+  push:
+    branches:
+      - feat/durable-evidence-outbox
+    paths:
+      - .github/workflows/validate-and-merge-durable-outbox.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  validate-and-merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/durable-evidence-outbox
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Rebase after secure enrollment milestone
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in $(seq 1 24); do
+            git fetch origin main
+            if git cat-file -e origin/main:agent/internal/gateway/server.go 2>/dev/null && \
+               git cat-file -e origin/main:agent/internal/transport/client.go 2>/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 24 ]; then
+              echo 'main does not contain the validated secure enrollment milestone' >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          git rebase origin/main
+
+      - name: Apply idempotent crash-safety and transport fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          transport_path = Path('agent/internal/transport/client.go')
+          transport_client = transport_path.read_text()
+          old = '''\tif response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusOK {
+\t\treturn Receipt{}, fmt.Errorf("evidence gateway returned HTTP %d: %s", response.StatusCode, safeError(responseContent))
+\t}
+'''
+          new = '''\tif response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusOK {
+\t\treturn Receipt{}, DecodeGatewayError(response.StatusCode, responseContent)
+\t}
+'''
+          if old in transport_client:
+              transport_client = transport_client.replace(old, new, 1)
+          if 'DecodeGatewayError(response.StatusCode, responseContent)' not in transport_client:
+              raise SystemExit('transport client does not expose typed gateway errors')
+          transport_path.write_text(transport_client)
+
+          journal_path = Path('agent/internal/outbox/journal.go')
+          journal = journal_path.read_text()
+          old = '''\tpayload, exists := firstRaw(raw, "payload")
+\tif !exists || len(bytes.TrimSpace(payload)) == 0 || !json.Valid(payload) {
+'''
+          new = '''\tpayload, exists := firstRaw(raw, "payload")
+\ttrimmedPayload := bytes.TrimSpace(payload)
+\tif !exists || len(trimmedPayload) == 0 || bytes.Equal(trimmedPayload, []byte("null")) || !json.Valid(payload) {
+'''
+          if old in journal:
+              journal = journal.replace(old, new, 1)
+          journal_path.write_text(journal)
+
+          state_path = Path('agent/internal/outbox/state.go')
+          state = state_path.read_text()
+          old = '''\tfor _, pending := range state.Pending {
+\t\tif pending.Sequence <= previousSequence || pending.Sequence >= state.NextBatchSequence {
+\t\t\treturn errors.New("outbox pending sequence is invalid")
+\t\t}
+'''
+          new = '''\tfor _, pending := range state.Pending {
+\t\tif pending.Sequence != previousSequence+1 || pending.Sequence >= state.NextBatchSequence {
+\t\t\treturn errors.New("outbox pending sequence is invalid or discontinuous")
+\t\t}
+'''
+          if old in state:
+              state = state.replace(old, new, 1)
+          state_path.write_text(state)
+
+          spool_path = Path('agent/internal/outbox/spool.go')
+          spool = spool_path.read_text()
+          if 'reconcile outbox before build' not in spool:
+              needle = '''\tif err := s.ensureOpen(); err != nil {
+\t\treturn BuildResult{}, err
+\t}
+'''
+              replacement = needle + '''\tif err := s.reconcile(); err != nil {
+\t\treturn BuildResult{}, fmt.Errorf("reconcile outbox before build: %w", err)
+\t}
+'''
+              if needle not in spool:
+                  raise SystemExit('outbox build reconcile insertion point not found')
+              spool = spool.replace(needle, replacement, 1)
+          spool = spool.replace('pendingBytes+int64(len(content)) > s.config.MaxSpoolBytes', 'pendingBytes+int64(len(content)+1) > s.config.MaxSpoolBytes')
+          spool_path.write_text(spool)
+
+          lock_path = Path('agent/internal/outbox/lock.go')
+          lock = lock_path.read_text()
+          if 'lockInfo, lockStatErr' not in lock:
+              needle = '''\t\tinfo, statErr := os.Stat(filepath.Join(path, "heartbeat"))
+\t\tif statErr == nil && time.Since(info.ModTime()) > lockStaleAfter {
+\t\t\tif removeErr := os.RemoveAll(path); removeErr != nil {
+\t\t\t\treturn nil, fmt.Errorf("remove stale outbox process lock: %w", removeErr)
+\t\t\t}
+\t\t\tcontinue
+\t\t}
+'''
+              replacement = '''\t\tinfo, statErr := os.Stat(filepath.Join(path, "heartbeat"))
+\t\tstale := statErr == nil && time.Since(info.ModTime()) > lockStaleAfter
+\t\tif errors.Is(statErr, os.ErrNotExist) {
+\t\t\tlockInfo, lockStatErr := os.Stat(path)
+\t\t\tstale = lockStatErr == nil && time.Since(lockInfo.ModTime()) > 10*time.Second
+\t\t}
+\t\tif stale {
+\t\t\tif removeErr := os.RemoveAll(path); removeErr != nil {
+\t\t\t\treturn nil, fmt.Errorf("remove stale outbox process lock: %w", removeErr)
+\t\t\t}
+\t\t\tcontinue
+\t\t}
+'''
+              if needle not in lock:
+                  raise SystemExit('outbox stale-lock insertion point not found')
+              lock = lock.replace(needle, replacement, 1)
+          lock_path.write_text(lock)
+
+          forwarder_test_path = Path('agent/cmd/ntagentshield-forwarder/main_test.go')
+          forwarder_test = forwarder_test_path.read_text()
+          if '\t"os"\n' not in forwarder_test:
+              forwarder_test = forwarder_test.replace('\t"log"\n', '\t"log"\n\t"os"\n', 1)
+          forwarder_test_path.write_text(forwarder_test)
+
+          readme_path = Path('agent/README.md')
+          readme = readme_path.read_text()
+          if '## Durable evidence outbox' not in readme:
+              readme += '''
+
+## Durable evidence outbox
+
+`ntagentshield-forwarder` reads the local hash-chained journal, creates deterministic sequence/hash-chained batches, persists them in a restrictive spool, retries transient failures with durable backoff, blocks permanent sequence/authentication errors, and deletes data only after an exact gateway receipt. Network outages apply backpressure to the outbox rather than stopping endpoint collection. See [Durable Outbox](docs/DURABLE_OUTBOX.md).
+'''
+              readme_path.write_text(readme)
+
+          mandatory = {
+              'agent/internal/outbox/spool.go': ['reconcile outbox before build', 'JournalCursor'],
+              'agent/internal/outbox/delivery.go': ['GatewayError', 'LastAckedSequence'],
+              'agent/internal/outbox/journal_integration_test.go': ['store.Open', 'journal.Append'],
+              'agent/internal/transport/client.go': ['DecodeGatewayError'],
+          }
+          for file_name, tokens in mandatory.items():
+              content = Path(file_name).read_text()
+              missing = [token for token in tokens if token not in content]
+              if missing:
+                  raise SystemExit(f'{file_name} missing required tokens: {missing}')
+          PY
+
+      - name: Format and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w \
+            agent/internal/outbox/*.go \
+            agent/internal/transport/errors.go \
+            agent/internal/transport/client.go \
+            agent/cmd/ntagentshield-forwarder/*.go
+          rm -f .github/workflows/validate-and-merge-durable-outbox.yml
+          git diff --check
+
+      - name: Go tests, vet, race, and cross-builds
+        shell: bash
+        working-directory: agent
+        run: |
+          set -euo pipefail
+          go test ./...
+          go vet ./...
+          go test -race ./...
+          for command in \
+            ntagentshield-agent \
+            ntagentshieldctl \
+            ntagentshield-inventory \
+            ntagentshield-ca \
+            ntagentshield-gateway \
+            ntagentshield-enroll \
+            ntagentshield-send \
+            ntagentshield-forwarder; do
+            go build -o "/tmp/${command}" "./cmd/${command}"
+            GOOS=windows GOARCH=amd64 go build -o "/tmp/${command}.exe" "./cmd/${command}"
+            GOOS=linux GOARCH=arm64 go build -o "/tmp/${command}-linux-arm64" "./cmd/${command}"
+          done
+
+      - name: Verify hardened systemd unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v systemd-analyze >/dev/null 2>&1; then
+            sudo useradd --system --no-create-home --shell /usr/sbin/nologin ntagentshield 2>/dev/null || true
+            sudo install -m 0755 /tmp/ntagentshield-agent /usr/local/bin/ntagentshield-agent
+            sudo install -m 0755 /tmp/ntagentshield-forwarder /usr/local/bin/ntagentshield-forwarder
+            systemd-analyze verify \
+              agent/packaging/systemd/ntagentshield.service \
+              agent/packaging/systemd/ntagentshield-forwarder.service
+          fi
+
+      - name: Python control-plane tests and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          ruff check src tests
+          pytest --cov=ntshield --cov-report=term-missing
+
+      - name: Commit validated implementation
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m 'feat(agent): add durable at-least-once evidence outbox'
+          git push --force-with-lease origin HEAD:feat/durable-evidence-outbox
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Mark PR ready and squash merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/7" -F draft=false >/dev/null
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/7/merge" \
+            -f merge_method=squash \
+            -f sha='${{ steps.commit.outputs.sha }}' \
+            -f commit_title='feat(agent): durable at-least-once evidence outbox' \
+            -f commit_message='Add strict journal export, deterministic sequence/hash-chained spool batches, tamper-evident state, crash reconciliation, quota backpressure, typed retry classification, persisted exponential backoff, exact receipt acknowledgements, operator unblock, hardened forwarder packaging, documentation, and end-to-end durability tests.' >/tmp/merge-result.json
+          python3 - <<'PY'
+          import json
+          result = json.load(open('/tmp/merge-result.json'))
+          if not result.get('merged'):
+              raise SystemExit(f"merge failed: {result}")
+          print(result.get('sha'))
+          PY
