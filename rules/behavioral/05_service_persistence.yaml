@@ -1,0 +1,35 @@
+id: BZH-SERVICE-001
+title: Suspicious service persistence with network activity
+description: A service points to a user-writable binary, starts, and then establishes an external connection.
+enabled: true
+severity: critical
+base_score: 76
+confidence: 0.9
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [SERVICE_FROM_WRITABLE_PATH, SERVICE_EXECUTION, SERVICE_EGRESS]
+mitre:
+  - tactic: Persistence
+    technique_id: T1543.003
+    technique: Windows Service
+  - tactic: Execution
+    technique_id: T1569.002
+    technique: Service Execution
+steps:
+  - id: service_create
+    description: Service created from a user-writable or temporary location
+    match:
+      event_type: service.create
+      service.binary_path|one_of_contains: [appdata, users/public, programdata, windows/temp, /tmp/, /var/tmp/]
+  - id: service_exec
+    description: Service binary or child process starts
+    within_seconds: 300
+    match:
+      event_type: process.start
+      process.parent_name|in: [services.exe, systemd, init]
+  - id: service_egress
+    description: Service process connects externally
+    within_seconds: 300
+    match:
+      event_type: network.connect
+      network.is_external: true

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NTAgentShield Behavioral Hunt</title>
+  <style>
+    :root { color-scheme: dark; --bg:#071018; --panel:#0d1a24; --line:#203746; --text:#d8edf5; --muted:#7996a5; --cyan:#54e5ff; --amber:#ffc857; --red:#ff6174; --green:#57e389; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; background:radial-gradient(circle at 20% 0,#123147 0,transparent 32%),var(--bg); color:var(--text); min-height:100vh; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:22px 28px; border-bottom:1px solid var(--line); background:#071018cc; backdrop-filter:blur(12px); position:sticky; top:0; z-index:2; }
+    .brand { display:flex; gap:14px; align-items:center; }
+    .mark { width:42px; height:42px; border:1px solid var(--cyan); clip-path:polygon(50% 0,92% 22%,84% 78%,50% 100%,16% 78%,8% 22%); display:grid; place-items:center; color:var(--cyan); font-weight:900; box-shadow:0 0 28px #54e5ff44; }
+    h1 { font-size:18px; margin:0; letter-spacing:.05em; } .sub { font-size:12px; color:var(--muted); margin-top:4px; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    input,button { border:1px solid var(--line); background:#0b1720; color:var(--text); border-radius:8px; padding:9px 12px; }
+    button { cursor:pointer; } button.primary { border-color:#2d8299; color:var(--cyan); } button:hover { border-color:var(--cyan); }
+    main { padding:24px 28px 40px; max-width:1600px; margin:auto; }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:12px; margin-bottom:18px; }
+    .stat,.panel { background:linear-gradient(180deg,#0e1d28,#0a151e); border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 50px #0005; }
+    .stat { padding:16px; } .stat b { display:block; font-size:28px; margin-top:7px; } .stat span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.12em; }
+    .grid { display:grid; grid-template-columns:1.15fr .85fr; gap:16px; }
+    .panel { overflow:hidden; } .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.12em; margin:0; padding:15px 17px; border-bottom:1px solid var(--line); color:#a8c8d5; }
+    table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:11px 13px; border-bottom:1px solid #172b37; font-size:12px; vertical-align:top; } th { color:var(--muted); font-weight:600; }
+    tr:hover td { background:#102431; }
+    .score { font-weight:800; font-variant-numeric:tabular-nums; } .critical { color:var(--red); } .high { color:var(--amber); } .medium { color:#83c8ff; } .low { color:var(--green); }
+    .tag { display:inline-block; padding:3px 6px; border:1px solid var(--line); border-radius:5px; margin:2px 3px 2px 0; color:#a9c2cd; font-size:10px; }
+    .detail { padding:16px; min-height:440px; } .empty { color:var(--muted); padding:30px; text-align:center; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#061018; border:1px solid var(--line); border-radius:8px; padding:12px; max-height:500px; overflow:auto; font-size:11px; }
+    .pulse { width:8px; height:8px; background:var(--green); border-radius:50%; box-shadow:0 0 14px var(--green); display:inline-block; margin-right:6px; }
+    @media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}header{align-items:flex-start;gap:12px;flex-direction:column}main{padding:16px}.controls{width:100%}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="mark">NT</div><div><h1>NTAgentShield // BEHAVIORAL HUNT</h1><div class="sub"><span class="pulse"></span>Evidence-first zero-day hunting, not signature theatre</div></div></div>
+  <div class="controls"><input id="tenant" value="demo" aria-label="Tenant"><button id="refresh">Refresh</button><button id="demo" class="primary">Replay attack chain</button></div>
+</header>
+<main>
+  <section class="stats">
+    <div class="stat"><span>Telemetry Events</span><b id="events">0</b></div>
+    <div class="stat"><span>Behavior Findings</span><b id="findings">0</b></div>
+    <div class="stat"><span>Incidents</span><b id="incidents">0</b></div>
+    <div class="stat"><span>Critical Open</span><b id="critical">0</b></div>
+    <div class="stat"><span>Hunt Rules</span><b id="rules">0</b></div>
+  </section>
+  <section class="grid">
+    <div class="panel"><h2>Incident Queue</h2><div style="overflow:auto"><table><thead><tr><th>Risk</th><th>Incident</th><th>Assets</th><th>MITRE</th><th>Updated</th></tr></thead><tbody id="incidentRows"></tbody></table></div></div>
+    <div class="panel"><h2>Evidence & Qwen Analysis</h2><div id="detail" class="detail"><div class="empty">เลือก incident เพื่อดู behavior chain และหลักฐาน</div></div></div>
+  </section>
+</main>
+<script>
+const q=s=>document.querySelector(s); let current=null;
+const tenant=()=>q('#tenant').value.trim()||'demo';
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
+async function api(path,opts){const r=await fetch(path,opts); if(!r.ok) throw new Error(await r.text()); return r.json();}
+async function refresh(){
+  const t=encodeURIComponent(tenant());
+  const [s,ins]=await Promise.all([api(`/v1/stats?tenant_id=${t}`),api(`/v1/incidents?tenant_id=${t}&limit=100`)]);
+  ['events','findings','incidents','rules'].forEach(k=>q('#'+k).textContent=s[k]??0); q('#critical').textContent=s.critical_open??0;
+  q('#incidentRows').innerHTML=ins.map(i=>`<tr data-id="${esc(i.incident_id)}"><td class="score ${esc(i.severity)}">${Number(i.risk_score).toFixed(1)}</td><td><b>${esc(i.title)}</b><br><span class="tag">${esc(i.status)}</span><span class="tag">${i.finding_ids.length} findings</span></td><td>${i.asset_ids.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}</td><td>${i.mitre.map(x=>`<span class="tag">${esc(x.technique_id)}</span>`).join('')}</td><td>${new Date(i.updated_at).toLocaleString()}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">ยังไม่มี incident</td></tr>';
+  document.querySelectorAll('#incidentRows tr[data-id]').forEach(r=>r.onclick=()=>show(r.dataset.id));
+  if(current && ins.some(i=>i.incident_id===current)) show(current);
+}
+async function show(id){current=id; const i=await api(`/v1/incidents/${id}`); q('#detail').innerHTML=`<div><b class="${esc(i.severity)}">Risk ${Number(i.risk_score).toFixed(1)} / ${esc(i.severity.toUpperCase())}</b><h3>${esc(i.title)}</h3><p>${i.asset_ids.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}</p><p>${i.mitre.map(x=>`<span class="tag">${esc(x.technique_id)} ${esc(x.technique)}</span>`).join('')}</p><button id="analyze" class="primary">Analyze with Qwen3.5-9B</button><h4>Grounded analyst report</h4><pre id="report">${esc(JSON.stringify(i.analyst_report??{status:'not analyzed'},null,2))}</pre></div>`; q('#analyze').onclick=async()=>{q('#report').textContent='Analyzing evidence bundle...'; try{const x=await api(`/v1/incidents/${id}/analyze`,{method:'POST'}); q('#report').textContent=JSON.stringify(x.analyst_report,null,2);}catch(e){q('#report').textContent=e.message;}};}
+async function replay(){q('#demo').disabled=true; try{const events=await api('/static/demo-events.json'); await api('/v1/events/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({events})}); await refresh();}finally{q('#demo').disabled=false;}}
+q('#refresh').onclick=refresh; q('#demo').onclick=replay; q('#tenant').onchange=refresh; refresh(); setInterval(refresh,15000);
+</script>
+</body>
+</html>

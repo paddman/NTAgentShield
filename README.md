@@ -1,83 +1,124 @@
 # NTAgentShield
 
-**AI Security Operator for Windows and Linux servers/endpoints**
+**Behavioral Zero-Day Hunting + Secure AI Endpoint Agent** สำหรับ Windows, Linux, Server และ Endpoint
 
-NTAgentShield is an endpoint/server security agent that collects operational and security telemetry, normalizes evidence, applies deterministic detections, performs read-only AI investigation, and places every state-changing response behind a policy and approval boundary.
+NTAgentShield แบ่งระบบเป็นสองส่วนที่ทำงานร่วมกัน:
 
-> ภาษาไทย: NTAgentShield คือ Agent ความปลอดภัยที่ติดตั้งใน Server หรือ Endpoint เพื่ออ่าน Log, ตรวจพฤติกรรม, ตรวจ Source Code, เชื่อมเหตุการณ์ และให้ AI ช่วยสืบสวน โดย AI ไม่มีสิทธิ์รัน shell หรือเปลี่ยนระบบโดยตรง
+1. **Control Plane** ที่ root ของ repository ใช้ Python/FastAPI สำหรับ normalize telemetry, ทำ behavioral baseline, correlation, incident scoring, evidence-backed AI analysis และ War Room API
+2. **Endpoint Agent** ที่ `agent/` ใช้ Go สำหรับอ่าน log, ตรวจ code และพฤติกรรมในเครื่อง, redact secret, เก็บ evidence แบบ tamper-evident และส่งข้อมูลไป Control Plane โดยไม่มี generic shell ให้ AI ใช้
 
-## Foundation status
-
-This repository currently implements the secure foundation, not a finished EDR product. The code is runnable and tested, while deep ETW/eBPF sensors, central multi-tenant fleet management, signed updates, and production containment adapters remain on the roadmap.
-
-Implemented now:
-
-- Cross-platform Go agent daemon and CLI with no third-party runtime dependencies.
-- File-tail collectors and parsers for IIS W3C, Nginx combined logs, MySQL general logs, Syslog, raw text, and normalized JSON events.
-- Deterministic detections for prompt injection in telemetry, encoded PowerShell, web-worker-to-shell execution, path traversal, high-risk SQL, security-control disabling, webroot script writes, and authentication bursts.
-- Code-security scanner for hard-coded secrets, TLS verification bypass, unsafe deserialization, command execution, SQL string concatenation, dynamic evaluation, public network exposure, PHP web-shell chains, GitHub Actions trust-boundary mistakes, and remote scripts piped to shell.
-- Tamper-evident SHA-256 hash-chained evidence journal.
-- Secret redaction before persistence or AI transfer.
-- Typed read-only tools (`host.info`, `file.stat`, `file.sha256`, `file.read_lines`) with path allowlists.
-- Deterministic policy engine that denies generic shell tools and blocks untrusted telemetry from directly triggering state changes.
-- Loopback-only authenticated local API for health, status, and event ingestion. It deliberately exposes no command endpoint.
-- Optional OpenAI-compatible AI investigator for local Qwen/Ollama/vLLM endpoints. The request contains no tools and all evidence is explicitly marked untrusted.
-
-## Security invariants
-
-These rules are architectural, not polite suggestions written in a prompt:
-
-1. Logs, HTTP fields, SQL comments, source comments, RAG documents, and network data are always untrusted evidence.
-2. The AI investigator is read-only and receives no tool definitions.
-3. There is no generic `shell.exec`, `cmd.exec`, or `powershell.exec` tool.
-4. Tool risk is defined by the registered tool, never by model-supplied arguments.
-5. Untrusted evidence cannot directly trigger containment, modification, or destructive actions.
-6. Approvals are bound to the digest of one exact action and expire.
-7. Local file tools are restricted to configured roots and resolve symlinks before access.
-8. Raw secrets are redacted before journal persistence and AI transfer.
-9. The local HTTP API binds to loopback only and has no action endpoint.
-10. Zero-day protection is behavior-based risk reduction, not a dishonest promise to detect every unknown vulnerability.
-
-See [Threat Model](docs/THREAT_MODEL.md), [AI Security](docs/AI_SECURITY.md), and [Response Safety](docs/RESPONSE_SAFETY.md).
+ระบบไม่ได้อ้างว่ารู้จักช่องโหว่ที่ยังไม่มีใครรู้จักล่วงหน้า สิ่งที่ระบบทำคือมองหา **พฤติกรรม exploitation และ post-exploitation** จากหลายแหล่ง เชื่อมเป็น attack chain แล้วให้ Qwen วิเคราะห์เฉพาะหลักฐานที่ผ่านขอบเขตความไว้วางใจแล้ว
 
 ## Architecture
 
-```text
-Log / Event / Code / HTTP ingest
-             |
-             v
-     Parser + Normalizer
-             |
-             v
-      Secret Redaction
-             |
-             +--------------------+
-             |                    |
-             v                    v
- Tamper-evident Journal    Deterministic Detection
-                                  |
-                                  v
-                              Findings
-                                  |
-                    +-------------+-------------+
-                    |                           |
-                    v                           v
-          Read-only AI Investigator      Policy + Typed Tools
-          (no tools, no actions)         (observe-only today)
+```mermaid
+flowchart LR
+  A[Windows / Linux / IIS / Nginx / DB / Firewall / Source Code] --> B[Go Endpoint Agent]
+  B --> C[Local Redaction + Deterministic Detection]
+  C --> D[Hash-chained Evidence Journal]
+  C --> E[Secure Transport]
+  E --> F[Python Control Plane]
+  F --> G[Normalizer + Online Baseline]
+  F --> H[Behavior Sequence Engine]
+  G --> I[Incident Correlator]
+  H --> I
+  I --> J[Evidence Bundle]
+  J --> K[Read-only Qwen Analyst]
+  K --> L[War Room / Incident API]
 ```
 
-The future NT Shield control plane will add tenant enrollment, fleet policy, centralized correlation, model hosting, rule distribution, incident workflow, and reporting. Endpoint privilege separation remains local and explicit.
+## สิ่งที่มีแล้ว
 
-## Quick start
+### Behavioral Control Plane
 
-Requirements: Go 1.23 or later.
+- Online baseline ต่อ `tenant + asset + role`
+- Ordered และ unordered multi-event correlation ภายใน time window
+- Behavior packs สำหรับ Web exploitation, credential access, database exfiltration, defense evasion, persistence, account compromise และ supply-chain execution
+- Normalizer สำหรับ Sysmon, Windows Event Log, IIS, Nginx, Apache, Linux auditd และ database audit
+- Incident correlation จาก asset, user, IP, domain, hash และ request ID
+- Risk scoring จาก rule confidence, anomaly, asset criticality และ telemetry diversity
+- Qwen ผ่าน OpenAI-compatible API พร้อม prompt-injection guard และ evidence-ID validation
+- FastAPI, SQLite WAL, REST API, replay corpus และ War Room
+
+### Secure Endpoint Agent
+
+- Agent daemon และ CLI สำหรับ Windows/Linux
+- Parsers สำหรับ IIS W3C, Nginx combined, MySQL general log, Syslog, normalized JSON และ raw text
+- Deterministic detections สำหรับ prompt injection ใน telemetry, encoded PowerShell, web-worker-to-shell, path traversal, high-risk SQL, security-control disabling, webroot writes และ authentication bursts
+- Code-security scanner สำหรับ secret, command execution, dynamic evaluation, SQL concatenation, TLS bypass, unsafe deserialization, Docker/GitHub Actions และ PHP web-shell patterns
+- SHA-256 hash-chained evidence journal
+- Secret redaction ก่อน persistence หรือ AI transfer
+- Typed read-only tools พร้อม path allowlist และ symlink resolution
+- Policy engine ที่ปฏิเสธ generic shell และห้าม untrusted telemetry สั่งเปลี่ยนระบบโดยตรง
+- Loopback-only authenticated local API ที่ไม่มี command endpoint
+- Optional read-only AI investigator สำหรับ Qwen/Ollama/vLLM โดยไม่ส่ง tool definitions ให้โมเดล
+
+## Security invariants
+
+1. Log, HTTP field, SQL comment, source comment, RAG document และ network data เป็น untrusted evidence เสมอ
+2. AI analyst ไม่มี generic shell และไม่มี privileged action tool
+3. Tool risk มาจาก registry ไม่รับค่าจากโมเดล
+4. Untrusted evidence ไม่สามารถ trigger containment หรือ mutation โดยตรง
+5. State-changing action ต้องผ่าน deterministic policy, exact action digest และ approval ที่มีวันหมดอายุ
+6. Secret ถูก redact ก่อน journal, transport และ AI context
+7. Tenant, asset และ time scope ถูกบังคับโดยระบบ ไม่ให้โมเดลขยายเอง
+8. รายงาน AI ที่อ้าง evidence ID ไม่มีจริงจะถูกปฏิเสธ
+9. Zero-day เป็น hypothesis จนกว่าจะมี reproduction และการยืนยันจากมนุษย์
+
+## โครงสร้าง Repository
+
+```text
+.
+├── src/                 # Behavioral control plane
+├── tests/               # Python tests
+├── rules/               # Behavioral hunting rules
+├── deploy/              # Qwen/A100 deployment helpers
+├── agent/               # Full Go endpoint/server agent
+│   ├── cmd/
+│   ├── internal/
+│   ├── config/
+│   ├── policies/
+│   ├── schemas/
+│   ├── packaging/
+│   └── docs/
+├── docs/                # Control-plane architecture and roadmap
+└── examples/            # Replay corpus and examples
+```
+
+## เริ่มใช้งาน Control Plane
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+cp .env.example .env
+ntshield serve --host 0.0.0.0 --port 8080
+```
+
+หรือใช้ Docker:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Replay attack chain:
+
+```bash
+ntshield replay examples/zero_day_web_chain.jsonl
+```
+
+## Build และทดลอง Endpoint Agent
+
+ต้องใช้ Go 1.23 หรือใหม่กว่า
+
+```bash
+cd agent
 go test ./...
 go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl
 ```
 
-Run the deterministic demo against IIS logs:
+ตรวจ IIS log:
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-log \
@@ -85,139 +126,74 @@ go run ./cmd/ntagentshieldctl scan-log \
   --file examples/logs/iis.log
 ```
 
-Scan a normalized endpoint event:
+ตรวจ event chain:
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-event \
   --file examples/events/web-worker-shell.json
 ```
 
-Scan source code:
+ตรวจ source code:
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-code \
   --path examples/code
 ```
 
-Validate configuration and policy:
-
-```bash
-go run ./cmd/ntagentshieldctl doctor \
-  --config config/agent.example.json
-```
-
-Run the agent using demo sources:
+รัน Agent:
 
 ```bash
 go run ./cmd/ntagentshield-agent \
   --config config/agent.example.json
 ```
 
-The API token is generated at `data/agent-api.token`. Query local status:
+รายละเอียด Agent อยู่ที่ [agent/README.md](agent/README.md)
 
-```bash
-TOKEN="$(cat data/agent-api.token)"
-curl -H "Authorization: Bearer ${TOKEN}" \
-  http://127.0.0.1:9477/v1/status
-```
-
-Verify the evidence chain:
-
-```bash
-go run ./cmd/ntagentshieldctl verify-store \
-  --path data/evidence.journal.jsonl
-```
-
-## AI investigator
-
-Copy `config/agent.local-ai.json`, set the local OpenAI-compatible endpoint and model, then enable AI. Remote endpoints are denied unless `allow_remote` is explicitly enabled; remote HTTP without TLS is rejected.
-
-```bash
-go run ./cmd/ntagentshieldctl ai-analyze \
-  --config config/agent.local-ai.json \
-  --event examples/events/web-worker-shell.json \
-  --objective "Explain the likely exploit chain and missing evidence"
-```
-
-Recommended local targets include Qwen behind vLLM/SGLang/Ollama or another OpenAI-compatible service. The model produces analysis only. It cannot invoke tools or apply changes.
-
-## Supported input formats
-
-| Format | Configuration value | Current scope |
-|---|---|---|
-| IIS W3C | `iis_w3c` | Dynamic `#Fields`, request metadata, status, latency, source IP |
-| Nginx combined | `nginx_combined` | Request, status, bytes, referer, user agent |
-| MySQL general | `mysql_general` | Query/execute events, normalized query, fingerprint, verbs |
-| Syslog | `syslog` | RFC3164-style messages with priority and program |
-| Normalized JSON | `jsonl` | Full NTAgentShield event schema |
-| Raw text | `raw` | Generic evidence and prompt-injection/control-disable detection |
-
-Planned collectors are listed in [Telemetry Matrix](docs/TELEMETRY_MATRIX.md).
-
-## CLI commands
+## API หลักของ Control Plane
 
 ```text
-ntagentshieldctl doctor
-ntagentshieldctl scan-log
-ntagentshieldctl scan-event
-ntagentshieldctl scan-code
-ntagentshieldctl ai-analyze
-ntagentshieldctl policy-check
-ntagentshieldctl tool
-ntagentshieldctl verify-store
-ntagentshieldctl version
+POST /v1/events/normalized
+POST /v1/events/raw
+POST /v1/events/bulk
+POST /v1/events/raw/bulk
+GET  /v1/findings?tenant_id=demo
+GET  /v1/incidents?tenant_id=demo
+POST /v1/incidents/{id}/analyze
+GET  /v1/coverage
+GET  /v1/stats?tenant_id=demo
+GET  /health
 ```
 
-Example policy denial:
+## ทดสอบทั้งระบบ
 
 ```bash
-go run ./cmd/ntagentshieldctl policy-check \
-  --policy policies/default-policy.json \
-  --tool host.isolate \
-  --risk contain \
-  --trust untrusted_telemetry \
-  --mode auto
-```
-
-The result must be denied because attacker-controlled evidence is not an operator.
-
-## Build targets
-
-```bash
-make fmt
+make dev
+make lint
 make test
-make vet
-make build
-make cross
+make agent-test
+make agent-race
+make agent
 ```
 
-`make cross` builds Windows amd64 and Linux amd64 binaries. Service templates are available under `packaging/`.
+CI ทดสอบ Python บน Linux และ Go Agent บน Linux/Windows พร้อม `go vet`, race test และ formatting gate
 
-## Repository layout
+## ขอบเขตถัดไป
 
-```text
-cmd/                    Agent daemon and operator CLI
-internal/agent/         Runtime and event pipeline
-internal/collector/     Log collectors
-internal/parser/        IIS, Nginx, MySQL, Syslog, JSON, raw parsers
-internal/detection/     Deterministic behavior and correlation rules
-internal/codescan/      Source-code security scanner
-internal/ai/            Read-only OpenAI-compatible investigator
-internal/policy/        Action policy and exact-action approvals
-internal/tools/         Typed, allowlisted read-only tools
-internal/store/         Hash-chained evidence journal
-config/                 Demo and OS configuration templates
-policies/               Deterministic action policy
-rules/                  Detection catalog metadata
-schemas/                Event, finding, and action schemas
-docs/                   Architecture, threat model, safety, roadmap
-packaging/               systemd and Windows service helpers
-```
+- Native Windows Event Log, Sysmon และ ETW collectors
+- Linux journald, auditd และ eBPF telemetry
+- Asset inventory, service/process/network inventory และ software/SBOM inventory
+- Signed enrollment, mTLS, signed policy และ signed update
+- Production response broker สำหรับ quarantine, process containment และ host isolation
+- Multi-tenant fleet policy, central correlation และ customer reporting
+- Model evaluation และ adversarial prompt/tool-injection benchmark
 
-## Design relationship to Cline
+เอกสารสำคัญ:
 
-NTAgentShield adopts the useful operator experience of Observe/Plan/Act, structured tools, diffs, and approvals. It is not a Cline fork and does not copy Cline source code. A general coding agent and a privileged security service have radically different trust boundaries, despite the software industry occasionally pretending otherwise.
+- [Control-plane architecture](docs/ARCHITECTURE.md)
+- [Behavioral zero-day hunting](docs/BEHAVIORAL-ZERO-DAY.md)
+- [Control-plane roadmap](docs/ROADMAP.md)
+- [Agent architecture](agent/docs/ARCHITECTURE.md)
+- [Agent threat model](agent/docs/THREAT_MODEL.md)
+- [Agent AI security](agent/docs/AI_SECURITY.md)
 
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+License: Apache-2.0

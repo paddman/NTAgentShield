@@ -1,23 +1,13 @@
-# Binaries
-bin/
-dist/
-*.exe
-*.dll
-*.so
-*.dylib
-
-# Runtime data
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+.env
 data/
-*.journal.jsonl
-*.offsets.json
-*.token
-
-# Editors and OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Coverage
-coverage.out
-coverage.html
+dist/
+build/
+*.egg-info/
+agent/ntshield-agent

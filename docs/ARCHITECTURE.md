@@ -1,104 +1,47 @@
 # Architecture
 
-## Current foundation
+## Design goal
 
-```text
-+---------------- Server / Endpoint ----------------+
-|                                                   |
-| Log files / normalized sensor events / code       |
-|                 |                                 |
-|                 v                                 |
-|        Collector + format parser                  |
-|                 |                                 |
-|                 v                                 |
-|          Redaction + provenance                   |
-|             /             \                       |
-|            v               v                      |
-|  Hash-chain journal   Detection engine            |
-|                            |                      |
-|                            v                      |
-|                         Finding                   |
-|                         /     \                   |
-|                        v       v                  |
-|              Read-only AI   Policy engine         |
-|              no tools       typed tools only      |
-|                                                   |
-+---------------------------------------------------+
-```
+Detect unknown attacks from observable effects rather than waiting for a CVE, signature, hash or
+vendor advisory. The platform keeps deterministic detection and response policy outside the LLM.
 
-## Components
+## Data path
 
-### Agent runtime
+1. **Collection**: existing sources produce Sysmon, Windows Event Log, auditd, journald, Zeek,
+   Suricata, firewall, web and database audit events.
+2. **Normalization**: vendor fields map into a compact OCSF-inspired event envelope.
+3. **Baseline**: online feature counts estimate rarity for process lineage, process-to-destination,
+   user-to-asset, execution hour, file directory, service binary and database query shape.
+4. **Sequence engine**: YAML rules correlate ordered events by tenant and asset within bounded
+   windows.
+5. **Scoring**: rule confidence combines with rarity, asset criticality and source diversity.
+6. **Correlation**: findings sharing an asset or entity become one incident.
+7. **Grounded analysis**: Qwen receives only incident evidence, not unrestricted log storage.
+8. **Response**: future policy engine evaluates analyst recommendations. The model never acts
+   directly on endpoints.
 
-The runtime loads configuration, creates a stable local identity, opens the evidence journal, initializes collectors, starts the loopback API, processes events, and records findings. It runs without third-party runtime dependencies.
+## Multi-tenant boundary
 
-### Collectors and parsers
+Every event, baseline counter, finding and incident includes `tenant_id`. Production deployment
+must add authenticated tenant claims and database row-level security. The demo API does not yet
+implement identity because pretending an unauthenticated prototype is tenant-safe would be a
+particularly dull form of fiction.
 
-The foundation tails bounded log increments and supports IIS W3C, Nginx combined, MySQL general, Syslog, normalized JSON, and raw text. Future native sensors will produce the same normalized event model.
+## Storage evolution
 
-### Redaction
+| Phase | Event store | State | Use |
+|---|---|---|---|
+| MVP | SQLite WAL | local process | demo, lab, single site |
+| Pilot | ClickHouse | Redis | high-rate telemetry, replay |
+| Service | ClickHouse cluster + object storage | Redis cluster | multi-tenant MDR |
 
-Redaction occurs before persistence and before AI transfer. It handles bearer tokens, common secret assignments, private keys, payment-number patterns, and nested secret-like fields. Redaction is defense in depth, not a substitute for collecting the minimum necessary fields.
+PostgreSQL should hold tenants, users, assets, policy and audit metadata. ClickHouse should hold
+high-volume immutable telemetry. Redis should hold short-lived sequence state and rate limits.
 
-### Evidence journal
+## Trust boundaries
 
-Each JSONL record contains sequence, timestamp, type, previous hash, payload hash, and record hash. Verification detects modification, deletion within the chain, insertion, and reordering. The foundation journal is tamper-evident, not tamper-proof; production will anchor checkpoints to the control plane or a trusted signing service.
-
-### Detection engine
-
-Detections are deterministic and evidence-backed. Stateful correlation currently includes authentication bursts. Planned engines add Sigma conversion, YARA/YARA-X, eBPF/ETW behavior sequences, per-asset baselines, and cross-host graphs.
-
-### Code scanner
-
-The current scanner is a bounded lexical layer with secret-safe excerpts. Planned adapters add Tree-sitter data flow, Semgrep, SBOM/dependency analysis, IaC scanners, and sandboxed patch validation.
-
-### AI investigator
-
-The AI client speaks to an OpenAI-compatible endpoint. It receives redacted evidence enclosed as untrusted JSON, receives no tools, and returns analysis only. The model is not an authorization authority and its confidence does not trigger response.
-
-### Policy and tools
-
-Tools declare canonical risk. The policy denies generic command tools, caps action TTL, blocks destructive actions in the foundation, and prevents untrusted evidence from directly causing state changes. Read-only file tools resolve symlinks and enforce configured roots.
-
-### Local API
-
-The local API binds to loopback, uses a generated bearer token, and exposes only health, status, and event ingestion. Remote event payloads are forcibly marked `untrusted_network`. No command or tool endpoint exists.
-
-## Planned privilege separation
-
-Production state-changing response will use a separate privileged broker:
-
-```text
-Unprivileged Agent / Investigator
-              |
-       signed typed request
-              v
-Deterministic Policy Gate
-              |
-   exact approval / pre-policy
-              v
-Privileged Response Broker
-              |
-    bounded OS-specific adapter
-              v
-Verify outcome + append audit + rollback
-```
-
-The investigator process should remain unprivileged. Only the broker owns narrow OS permissions.
-
-## Control-plane integration
-
-Planned NT Shield integration includes:
-
-- mTLS enrollment and short-lived workload identity;
-- tenant-scoped policy and rule distribution;
-- central incident correlation and evidence graph;
-- local/central Qwen model routing;
-- signed update manifests and staged rollout;
-- audit, retention, reporting, and usage accounting;
-- air-gapped deployment mode;
-- strict tenant partitioning with platform-admin oversight.
-
-## Event compatibility
-
-The internal event schema is intentionally compact. A control-plane adapter will map it to OCSF classes and export via OTLP where appropriate. Security meaning and telemetry transport remain separate concerns.
+- Telemetry is untrusted.
+- Rule files are trusted configuration and require code review.
+- Qwen output is untrusted until schema and evidence validation passes.
+- Any disruptive response requires policy evaluation and human approval.
+- Agents use tenant-scoped enrollment credentials, mTLS and signed updates in later phases.

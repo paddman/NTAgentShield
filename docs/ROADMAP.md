@@ -1,102 +1,33 @@
 # Roadmap
 
-## PR 0: Product boundary and threat model
+## PR 1: Behavioral MVP (this scaffold)
 
-Status: **implemented in foundation**
+Normalization, baseline rarity, ordered sequence rules, incident correlation, Qwen grounded report,
+War Room, demo replay and Go transport agent.
 
-- product definition;
-- architecture and trust boundaries;
-- AI security and response-safety model;
-- language and no-generic-shell ADRs.
+## PR 2: Native endpoint telemetry
 
-## PR 1: Secure agent core
+- Windows service in Rust or Go with Event Log subscription, ETW process/network providers,
+  signed binary inventory and tamper protection.
+- Linux service in Rust with auditd/journald readers and optional CO-RE eBPF sensors.
+- mTLS enrollment, key rotation, signed configuration and local disk queue.
 
-Status: **foundation implemented**
+## PR 3: Scalable control plane
 
-- stable local identity;
-- configuration validation;
-- loopback API and token;
-- evidence journal;
-- policy engine;
-- typed read-only tools;
-- CI and cross-platform builds.
+PostgreSQL tenant control data, ClickHouse telemetry, Redis sequence state, Kafka/Redpanda ingestion,
+RBAC, audit logs, retention and per-tenant quotas.
 
-## PR 2: Native asset inventory and endpoint telemetry
+## PR 4: Detection engineering lifecycle
 
-- Windows Event Log and Sysmon collectors;
-- Linux journald and auditd collectors;
-- process, service, package, listening-port, user, and persistence inventory;
-- durable collector cursors and backpressure;
-- resource-budget telemetry.
+Rule versioning, unit tests, historical replay, suppression scopes, canary deployment, precision
+metrics, ATT&CK coverage and Sigma import/export.
 
-## PR 3: Web, database, firewall, and container collectors
+## PR 5: Response policy
 
-- production IIS/Nginx/Apache adapters;
-- PostgreSQL and SQL Server audit adapters;
-- database query fingerprint/redaction policy;
-- firewall/WAF vendor parsers;
-- Docker/Podman/Kubernetes telemetry.
+Read-only enrichment first. Then approval-gated block IP, isolate host, stop process, disable account
+and virtual patch. Every action requires idempotency, rollback, blast-radius limits and audit trails.
 
-## PR 4: Detection fabric
+## PR 6: Model improvement
 
-- external signed rule packs;
-- Sigma conversion;
-- YARA/YARA-X and Suricata adapters;
-- temporal behavior DSL;
-- per-role baselines and anomaly scoring;
-- ATT&CK/ATLAS mapping and test corpus.
-
-## PR 5: Code-security workspace
-
-Foundation lexical scanner exists. Planned:
-
-- Tree-sitter AST and data flow;
-- Semgrep adapter;
-- SBOM, dependency, secret, IaC, container, and CI scanners;
-- repository indexing and incremental scan;
-- security diff, patch proposal, sandbox tests, checkpoint and rollback.
-
-## PR 6: Cline-style security console
-
-- desktop console and terminal TUI;
-- Observe/Plan/Act modes;
-- evidence timeline and graph;
-- tool-call preview;
-- diff review and approval;
-- incident notebooks and export.
-
-## PR 7: AI investigator and AI runtime guard
-
-Foundation read-only AI client exists. Planned:
-
-- central/local model routing;
-- structured evidence citations;
-- output DLP and canary-secret detection;
-- RAG provenance and poisoning controls;
-- MCP/tool manifest signatures;
-- memory-write policy;
-- Thai/English injection red-team suite.
-
-## PR 8: Privileged response broker
-
-- separate service identity and OS permissions;
-- Windows/Linux containment adapters;
-- dry-run, exact approval, audit, verification, rollback;
-- emergency kill switch and action budget.
-
-## PR 9: Unknown-threat hunter
-
-- web-request-to-process-to-file-to-network chains;
-- database-to-process/file correlation;
-- rare parent-child and destination behavior;
-- exploit primitive and post-exploitation detections;
-- virtual WAF patch proposal.
-
-## PR 10: NT Shield control-plane integration
-
-- mTLS enrollment and rotation;
-- tenant-scoped fleet and policy;
-- central evidence graph and incidents;
-- Qwen inference on NT infrastructure;
-- signed rule/model/update distribution;
-- reporting, SLA, retention, billing, and air-gap mode.
+SOC benchmark dataset, Thai incident report evaluation, LoRA only after prompt/RAG/tool baselines,
+model routing, confidence calibration and red-team tests for prompt injection and evidence forgery.

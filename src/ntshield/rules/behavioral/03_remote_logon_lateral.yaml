@@ -1,0 +1,36 @@
+id: BZH-RDP-001
+title: Remote logon followed by uncommon execution and lateral movement
+description: A remote or explicit-credential logon is followed by script execution and a connection to another internal host.
+enabled: true
+severity: high
+base_score: 66
+confidence: 0.82
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [REMOTE_LOGON, POST_ACCESS_EXECUTION, EAST_WEST_MOVEMENT]
+mitre:
+  - tactic: Lateral Movement
+    technique_id: T1021
+    technique: Remote Services
+  - tactic: Execution
+    technique_id: T1059
+    technique: Command and Scripting Interpreter
+steps:
+  - id: remote_logon
+    description: RDP, network, or explicit credential logon
+    match:
+      event_type|in: [auth.logon, auth.explicit_credentials]
+      actor.logon_type|in: ['3', '9', '10']
+  - id: post_access_exec
+    description: A command interpreter or remote execution utility starts
+    within_seconds: 300
+    match:
+      event_type: process.start
+      process.name|in: [powershell.exe, pwsh.exe, cmd.exe, wmic.exe, psexec.exe, sc.exe, sh, bash, ssh]
+  - id: lateral_connection
+    description: The process connects to an internal peer
+    within_seconds: 300
+    match:
+      event_type: network.connect
+      network.is_external: false
+      network.destination_port|in: [22, 135, 139, 445, 3389, 5985, 5986]

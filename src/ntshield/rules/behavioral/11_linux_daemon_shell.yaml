@@ -1,0 +1,43 @@
+id: BZH-LINUX-001
+title: Linux network daemon spawned shell and staged persistence
+description: A network-facing Linux daemon launches a shell, reaches an external destination, and writes into a temporary or persistence path.
+enabled: true
+severity: critical
+base_score: 79
+confidence: 0.9
+window_seconds: 420
+group_by: [tenant_id, asset.id]
+reason_codes: [DAEMON_TO_SHELL, SHELL_EGRESS, LINUX_PERSISTENCE_WRITE]
+mitre:
+  - tactic: Execution
+    technique_id: T1059.004
+    technique: Unix Shell
+  - tactic: Persistence
+    technique_id: T1053.003
+    technique: Cron
+steps:
+  - id: daemon_shell
+    description: Network daemon launches a shell or interpreter
+    match:
+      event_type: process.start
+      process.parent_name|in: [nginx, apache2, httpd, php-fpm, sshd, mysqld, postgres, java, node]
+      process.name|in: [sh, bash, dash, zsh, python, python3, perl, curl, wget]
+    bind:
+      shell_pid: process.pid
+  - id: shell_egress
+    description: Shell or interpreter connects externally
+    within_seconds: 180
+    match:
+      event_type: network.connect
+      process.name|in: [sh, bash, dash, zsh, python, python3, perl, curl, wget]
+      network.is_external: true
+    where:
+      process.pid: $shell_pid
+  - id: persistence_write
+    description: File written to staging or persistence path
+    within_seconds: 180
+    match:
+      event_type: file.create
+      file.path|one_of_contains: [/etc/cron, /etc/systemd/, /tmp/., /var/tmp/., .ssh/authorized_keys]
+    where:
+      process.pid: $shell_pid
