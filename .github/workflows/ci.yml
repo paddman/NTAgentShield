@@ -1,4 +1,5 @@
 name: CI
+
 on:
   push:
   pull_request:
@@ -7,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  python:
+  python-control-plane:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +21,30 @@ jobs:
       - run: pytest --cov=ntshield --cov-report=term-missing
 
   go-agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build agent
+        run: go build ./cmd/ntagentshield-agent
+      - name: Build CLI
+        run: go build ./cmd/ntagentshieldctl
+
+  go-agent-race:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -30,5 +55,26 @@ jobs:
         with:
           go-version: '1.23.x'
           cache-dependency-path: agent/go.mod
-      - run: go test ./...
-      - run: go build ./cmd/ntshield-agent
+      - run: go test -race ./...
+
+  go-agent-formatting:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+      - name: Verify gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "Go files require formatting:"
+            echo "$files"
+            exit 1
+          fi

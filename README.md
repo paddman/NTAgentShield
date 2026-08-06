@@ -1,62 +1,91 @@
 # NTAgentShield
 
-**Behavioral Zero-Day Hunting + Grounded AI SOC Analyst** สำหรับติดตั้งใน server, endpoint
-และ control plane ของ NT Shield
+**Behavioral Zero-Day Hunting + Secure AI Endpoint Agent** สำหรับ Windows, Linux, Server และ Endpoint
 
-ระบบนี้ไม่ได้อ้างว่าโมเดล 9B มองเห็นช่องโหว่ที่โลกยังไม่รู้จักด้วยญาณพิเศษ สิ่งที่มันทำคือจับ
-**พฤติกรรมหลังการเจาะระบบ** จากหลายแหล่ง เชื่อมเป็น attack chain แล้วส่งเฉพาะหลักฐานที่เกี่ยวข้อง
-ให้ Qwen3.5-9B วิเคราะห์โดยบังคับให้อ้าง `event_id` จริงทุกข้อสรุป
+NTAgentShield แบ่งระบบเป็นสองส่วนที่ทำงานร่วมกัน:
 
-## สิ่งที่มีใน MVP นี้
+1. **Control Plane** ที่ root ของ repository ใช้ Python/FastAPI สำหรับ normalize telemetry, ทำ behavioral baseline, correlation, incident scoring, evidence-backed AI analysis และ War Room API
+2. **Endpoint Agent** ที่ `agent/` ใช้ Go สำหรับอ่าน log, ตรวจ code และพฤติกรรมในเครื่อง, redact secret, เก็บ evidence แบบ tamper-evident และส่งข้อมูลไป Control Plane โดยไม่มี generic shell ให้ AI ใช้
 
-- Online behavioral baseline ต่อ `tenant + asset + role`
-- Ordered sequence detection ภายใน time window
-- 13 hunting chains สำหรับ Windows, Linux, Web, Network และ Database
-- Incident correlation จาก asset, user, IP, domain, hash และ request ID
-- Risk scoring จาก rule confidence, anomaly, asset criticality และ telemetry diversity
-- Normalizer สำหรับ Sysmon, Windows Security Event, IIS/Nginx/Apache, auditd และ DB audit
-- Qwen3.5-9B ผ่าน OpenAI-compatible API พร้อม prompt-injection guard
-- Output validator ปฏิเสธรายงานที่โมเดลแต่ง `event_id`
-- FastAPI, SQLite WAL, REST API และหน้า War Room
-- Go transport agent ที่มี local spool เมื่อส่งข้อมูลไม่ได้
-- Attack replay และ test suite
+ระบบไม่ได้อ้างว่ารู้จักช่องโหว่ที่ยังไม่มีใครรู้จักล่วงหน้า สิ่งที่ระบบทำคือมองหา **พฤติกรรม exploitation และ post-exploitation** จากหลายแหล่ง เชื่อมเป็น attack chain แล้วให้ Qwen วิเคราะห์เฉพาะหลักฐานที่ผ่านขอบเขตความไว้วางใจแล้ว
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A[Endpoint / Server / Network] --> B[Go Agent / Existing Collectors]
-  B --> C[Normalizer]
-  C --> D[(Event Store)]
-  C --> E[Online Baseline]
-  C --> F[Behavior Sequence Engine]
-  E --> G[Behavior Finding]
-  F --> G
-  G --> H[Incident Correlator]
-  H --> I[Evidence Bundle]
-  I --> J[Qwen3.5-9B on A100]
-  J --> K[Grounded Analyst Report]
-  H --> L[War Room Dashboard]
-  K --> L
+  A[Windows / Linux / IIS / Nginx / DB / Firewall / Source Code] --> B[Go Endpoint Agent]
+  B --> C[Local Redaction + Deterministic Detection]
+  C --> D[Hash-chained Evidence Journal]
+  C --> E[Secure Transport]
+  E --> F[Python Control Plane]
+  F --> G[Normalizer + Online Baseline]
+  F --> H[Behavior Sequence Engine]
+  G --> I[Incident Correlator]
+  H --> I
+  I --> J[Evidence Bundle]
+  J --> K[Read-only Qwen Analyst]
+  K --> L[War Room / Incident API]
 ```
 
-ดูรายละเอียดที่ [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) และ
-[docs/BEHAVIORAL-ZERO-DAY.md](docs/BEHAVIORAL-ZERO-DAY.md)
+## สิ่งที่มีแล้ว
 
-## เริ่มใช้งานเร็ว
+### Behavioral Control Plane
 
-### 1. รัน Qwen3.5-9B บน A100
+- Online baseline ต่อ `tenant + asset + role`
+- Ordered และ unordered multi-event correlation ภายใน time window
+- Behavior packs สำหรับ Web exploitation, credential access, database exfiltration, defense evasion, persistence, account compromise และ supply-chain execution
+- Normalizer สำหรับ Sysmon, Windows Event Log, IIS, Nginx, Apache, Linux auditd และ database audit
+- Incident correlation จาก asset, user, IP, domain, hash และ request ID
+- Risk scoring จาก rule confidence, anomaly, asset criticality และ telemetry diversity
+- Qwen ผ่าน OpenAI-compatible API พร้อม prompt-injection guard และ evidence-ID validation
+- FastAPI, SQLite WAL, REST API, replay corpus และ War Room
 
-ติดตั้ง vLLM รุ่นที่รองรับ Qwen3.5 แล้วรัน:
+### Secure Endpoint Agent
 
-```bash
-./deploy/run-qwen-a100.sh
+- Agent daemon และ CLI สำหรับ Windows/Linux
+- Parsers สำหรับ IIS W3C, Nginx combined, MySQL general log, Syslog, normalized JSON และ raw text
+- Deterministic detections สำหรับ prompt injection ใน telemetry, encoded PowerShell, web-worker-to-shell, path traversal, high-risk SQL, security-control disabling, webroot writes และ authentication bursts
+- Code-security scanner สำหรับ secret, command execution, dynamic evaluation, SQL concatenation, TLS bypass, unsafe deserialization, Docker/GitHub Actions และ PHP web-shell patterns
+- SHA-256 hash-chained evidence journal
+- Secret redaction ก่อน persistence หรือ AI transfer
+- Typed read-only tools พร้อม path allowlist และ symlink resolution
+- Policy engine ที่ปฏิเสธ generic shell และห้าม untrusted telemetry สั่งเปลี่ยนระบบโดยตรง
+- Loopback-only authenticated local API ที่ไม่มี command endpoint
+- Optional read-only AI investigator สำหรับ Qwen/Ollama/vLLM โดยไม่ส่ง tool definitions ให้โมเดล
+
+## Security invariants
+
+1. Log, HTTP field, SQL comment, source comment, RAG document และ network data เป็น untrusted evidence เสมอ
+2. AI analyst ไม่มี generic shell และไม่มี privileged action tool
+3. Tool risk มาจาก registry ไม่รับค่าจากโมเดล
+4. Untrusted evidence ไม่สามารถ trigger containment หรือ mutation โดยตรง
+5. State-changing action ต้องผ่าน deterministic policy, exact action digest และ approval ที่มีวันหมดอายุ
+6. Secret ถูก redact ก่อน journal, transport และ AI context
+7. Tenant, asset และ time scope ถูกบังคับโดยระบบ ไม่ให้โมเดลขยายเอง
+8. รายงาน AI ที่อ้าง evidence ID ไม่มีจริงจะถูกปฏิเสธ
+9. Zero-day เป็น hypothesis จนกว่าจะมี reproduction และการยืนยันจากมนุษย์
+
+## โครงสร้าง Repository
+
+```text
+.
+├── src/                 # Behavioral control plane
+├── tests/               # Python tests
+├── rules/               # Behavioral hunting rules
+├── deploy/              # Qwen/A100 deployment helpers
+├── agent/               # Full Go endpoint/server agent
+│   ├── cmd/
+│   ├── internal/
+│   ├── config/
+│   ├── policies/
+│   ├── schemas/
+│   ├── packaging/
+│   └── docs/
+├── docs/                # Control-plane architecture and roadmap
+└── examples/            # Replay corpus and examples
 ```
 
-ค่าเริ่มต้นใช้ text-only mode, context 65,536 tokens และพอร์ต `8000` เพื่อเหลือ VRAM สำหรับ
-concurrency มากกว่าการเปิด 262K ให้ทุก request แล้วเฝ้าดู KV cache กินเครื่องอย่างสง่างาม
-
-### 2. รัน NTAgentShield
+## เริ่มใช้งาน Control Plane
 
 ```bash
 python -m venv .venv
@@ -66,8 +95,6 @@ cp .env.example .env
 ntshield serve --host 0.0.0.0 --port 8080
 ```
 
-เปิด `http://SERVER:8080` แล้วกด **Replay attack chain** เพื่อดูเหตุการณ์จำลอง
-
 หรือใช้ Docker:
 
 ```bash
@@ -75,19 +102,54 @@ cp .env.example .env
 docker compose up --build
 ```
 
-### 3. Replay ผ่าน CLI
+Replay attack chain:
 
 ```bash
 ntshield replay examples/zero_day_web_chain.jsonl
 ```
 
-ผลที่คาดหวัง:
+## Build และทดลอง Endpoint Agent
 
-```text
-[CRITICAL ...] BZH-WEB-001: Novel web request followed by post-exploitation chain
+ต้องใช้ Go 1.23 หรือใหม่กว่า
+
+```bash
+cd agent
+go test ./...
+go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl
 ```
 
-## API ที่สำคัญ
+ตรวจ IIS log:
+
+```bash
+go run ./cmd/ntagentshieldctl scan-log \
+  --format iis_w3c \
+  --file examples/logs/iis.log
+```
+
+ตรวจ event chain:
+
+```bash
+go run ./cmd/ntagentshieldctl scan-event \
+  --file examples/events/web-worker-shell.json
+```
+
+ตรวจ source code:
+
+```bash
+go run ./cmd/ntagentshieldctl scan-code \
+  --path examples/code
+```
+
+รัน Agent:
+
+```bash
+go run ./cmd/ntagentshield-agent \
+  --config config/agent.example.json
+```
+
+รายละเอียด Agent อยู่ที่ [agent/README.md](agent/README.md)
+
+## API หลักของ Control Plane
 
 ```text
 POST /v1/events/normalized
@@ -102,97 +164,36 @@ GET  /v1/stats?tenant_id=demo
 GET  /health
 ```
 
-ตัวอย่างส่ง Sysmon event ที่ยังไม่ normalize:
-
-```bash
-curl -X POST http://127.0.0.1:8080/v1/events/raw \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tenant_id":"customer-a",
-    "asset_id":"web-01",
-    "asset_role":"public-web",
-    "asset_criticality":5,
-    "source_type":"sysmon",
-    "data":{
-      "EventID":1,
-      "Image":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-      "ParentImage":"C:\\Windows\\System32\\inetsrv\\w3wp.exe",
-      "CommandLine":"powershell.exe -NoProfile ...",
-      "User":"IIS APPPOOL\\Production"
-    }
-  }'
-```
-
-## Behavioral rule format
-
-กฎอยู่ใน `rules/behavioral/*.yaml` และเป็นลำดับเหตุการณ์ ไม่ใช่ keyword เดี่ยว ๆ:
-
-```yaml
-id: BZH-WEB-001
-window_seconds: 300
-group_by: [tenant_id, asset.id]
-steps:
-  - id: novel_request
-    match:
-      event_type: web.request
-      web.payload_novelty|gte: 0.75
-  - id: service_shell
-    within_seconds: 120
-    match:
-      event_type: process.start
-      process.parent_name|in: [w3wp.exe, nginx, apache2]
-      process.name|in: [powershell.exe, cmd.exe, sh, bash]
-```
-
-Matcher รองรับ `in`, `not_in`, `contains`, `one_of_contains`, `regex`, `gt/gte/lt/lte`,
-`cidr`, `not_cidr`, `starts/endswith` และ `exists`
-
-## Qwen ทำหน้าที่อะไร
-
-Qwenไม่ได้ตรวจ raw log ทุกบรรทัด ระบบ deterministic จะคัด event และประกอบ incident ก่อน จากนั้น
-Qwenรับ evidence bundle เพื่อ:
-
-- สรุป attack chain ภาษาไทยหรืออังกฤษ
-- แยก observation, inference และ evidence gap
-- ประเมินสมมติฐาน unknown/zero-day โดยห้ามยืนยันเกินหลักฐาน
-- เสนอ read-only investigation queries
-- เสนอ response action พร้อม `requires_approval`
-
-ข้อความใน log, URL, SQL, command line และไฟล์ถูกถือเป็น **untrusted data** ทั้งหมด รายงานถูก reject
-ทันทีเมื่ออ้าง event ID ที่ไม่มีจริง
-
-## Go agent
-
-```bash
-make agent
-./agent/ntshield-agent \
-  --server http://127.0.0.1:8080 \
-  --tenant customer-a \
-  --asset web-01 \
-  --role public-web \
-  --criticality 5 \
-  --source sysmon \
-  --input ./sysmon.jsonl
-```
-
-MVP agent เป็น secure transport adapter ยังไม่ใช่ kernel EDR รายละเอียด collector ระยะถัดไปอยู่ใน
-[docs/ROADMAP.md](docs/ROADMAP.md)
-
-## ทดสอบ
+## ทดสอบทั้งระบบ
 
 ```bash
 make dev
 make lint
 make test
-cd agent && go test ./... && go build ./cmd/ntshield-agent
+make agent-test
+make agent-race
+make agent
 ```
 
-## ข้อจำกัดที่ตั้งใจไว้
+CI ทดสอบ Python บน Linux และ Go Agent บน Linux/Windows พร้อม `go vet`, race test และ formatting gate
 
-- ไม่มี auto-block, auto-kill หรือ auto-isolate ใน MVP
-- SQLite เหมาะกับ demo และ site ขนาดเล็ก ก่อนย้าย event store ไป ClickHouse/OpenSearch
-- Baseline ต้องมีช่วงเรียนรู้และ allowlist ตาม asset role
-- ATT&CK mapping เป็น context สำหรับ analyst ไม่ใช่หลักฐานว่าการโจมตีเกิดขึ้นจริง
-- “zero-day” เป็น hypothesis เท่านั้นจนกว่าจะมี exploit reproduction, affected version และการยืนยันจากมนุษย์
+## ขอบเขตถัดไป
+
+- Native Windows Event Log, Sysmon และ ETW collectors
+- Linux journald, auditd และ eBPF telemetry
+- Asset inventory, service/process/network inventory และ software/SBOM inventory
+- Signed enrollment, mTLS, signed policy และ signed update
+- Production response broker สำหรับ quarantine, process containment และ host isolation
+- Multi-tenant fleet policy, central correlation และ customer reporting
+- Model evaluation และ adversarial prompt/tool-injection benchmark
+
+เอกสารสำคัญ:
+
+- [Control-plane architecture](docs/ARCHITECTURE.md)
+- [Behavioral zero-day hunting](docs/BEHAVIORAL-ZERO-DAY.md)
+- [Control-plane roadmap](docs/ROADMAP.md)
+- [Agent architecture](agent/docs/ARCHITECTURE.md)
+- [Agent threat model](agent/docs/THREAT_MODEL.md)
+- [Agent AI security](agent/docs/AI_SECURITY.md)
 
 License: Apache-2.0

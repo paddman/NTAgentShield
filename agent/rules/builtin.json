@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "rules": [
+    {"id": "NTS-AI-001", "title": "Prompt-injection content in untrusted evidence", "severity": "high", "category": "ai.prompt_injection"},
+    {"id": "NTS-WIN-001", "title": "Encoded or in-memory PowerShell activity", "severity": "high", "category": "execution.powershell", "mitre": ["T1059.001"]},
+    {"id": "NTS-WEB-001", "title": "Web service spawned a command interpreter", "severity": "critical", "category": "exploit.web_worker_shell", "mitre": ["T1190", "T1059"]},
+    {"id": "NTS-WEB-002", "title": "Path traversal or sensitive-file probe", "severity": "medium", "category": "web.path_traversal", "mitre": ["T1190"]},
+    {"id": "NTS-WEB-003", "title": "Executable server-side file written to a webroot", "severity": "high", "category": "persistence.web_shell_artifact", "mitre": ["T1505.003"]},
+    {"id": "NTS-DB-001", "title": "High-risk database operation", "severity": "high", "category": "database.high_risk_query"},
+    {"id": "NTS-EVADE-001", "title": "Security logging or protection disabling behavior", "severity": "critical", "category": "defense_evasion.control_disable", "mitre": ["T1070", "T1562.001"]},
+    {"id": "NTS-AUTH-001", "title": "Authentication failure burst", "severity": "high", "category": "credential_access.brute_force", "mitre": ["T1110"]}
+  ]
+}

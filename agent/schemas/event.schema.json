@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ntagentshield.local/schemas/event.schema.json",
+  "title": "NTAgentShield Event",
+  "type": "object",
+  "required": ["schema_version", "id", "timestamp", "kind", "severity", "trust"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "id": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "agent_id": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "kind": {"type": "string", "minLength": 1},
+    "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+    "trust": {"enum": ["system", "signed_policy", "operator", "trusted_config", "untrusted_telemetry", "untrusted_code", "untrusted_network"]},
+    "asset": {"type": "object"},
+    "actor": {"type": "object"},
+    "process": {"type": "object"},
+    "network": {"type": "object"},
+    "http": {"type": "object"},
+    "database": {"type": "object"},
+    "file": {"type": "object"},
+    "message": {"type": "string"},
+    "attributes": {"type": "object"},
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source": {"type": "string"},
+        "collector": {"type": "string"},
+        "original_path": {"type": "string"},
+        "line_number": {"type": "integer", "minimum": 0},
+        "received_at": {"type": "string", "format": "date-time"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

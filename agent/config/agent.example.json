@@ -1,0 +1,73 @@
+{
+  "agent_id": "",
+  "tenant_id": "demo-tenant",
+  "data_dir": "../data",
+  "poll_interval": "2s",
+  "sources": [
+    {
+      "id": "demo-iis",
+      "enabled": true,
+      "path": "../examples/logs/iis.log",
+      "format": "iis_w3c",
+      "trust": "untrusted_telemetry",
+      "from_start": true,
+      "max_batch": 1000
+    },
+    {
+      "id": "demo-nginx",
+      "enabled": true,
+      "path": "../examples/logs/nginx.log",
+      "format": "nginx_combined",
+      "trust": "untrusted_telemetry",
+      "from_start": true,
+      "max_batch": 1000
+    },
+    {
+      "id": "demo-mysql",
+      "enabled": true,
+      "path": "../examples/logs/mysql-general.log",
+      "format": "mysql_general",
+      "trust": "untrusted_telemetry",
+      "from_start": true,
+      "max_batch": 1000
+    },
+    {
+      "id": "demo-syslog",
+      "enabled": true,
+      "path": "../examples/logs/syslog.log",
+      "format": "syslog",
+      "trust": "untrusted_telemetry",
+      "from_start": true,
+      "max_batch": 1000
+    },
+    {
+      "id": "demo-endpoint-events",
+      "enabled": true,
+      "path": "../examples/events/events.jsonl",
+      "format": "jsonl",
+      "trust": "untrusted_telemetry",
+      "from_start": true,
+      "max_batch": 1000
+    }
+  ],
+  "api": {
+    "enabled": true,
+    "listen": "127.0.0.1:9477",
+    "token_file": "agent-api.token"
+  },
+  "tools": {
+    "policy_file": "../policies/default-policy.json",
+    "allowed_paths": [
+      "../examples",
+      "../data"
+    ]
+  },
+  "ai": {
+    "enabled": false,
+    "endpoint": "http://127.0.0.1:8000/v1",
+    "model": "Qwen/Qwen3-8B",
+    "api_key_env": "NTAGENTSHIELD_AI_API_KEY",
+    "allow_remote": false,
+    "timeout": "30s"
+  }
+}

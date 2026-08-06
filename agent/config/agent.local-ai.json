@@ -1,0 +1,27 @@
+{
+  "agent_id": "",
+  "tenant_id": "demo-tenant",
+  "data_dir": "../data",
+  "poll_interval": "2s",
+  "sources": [],
+  "api": {
+    "enabled": false,
+    "listen": "127.0.0.1:9477",
+    "token_file": "agent-api.token"
+  },
+  "tools": {
+    "policy_file": "../policies/default-policy.json",
+    "allowed_paths": [
+      "../examples",
+      "../data"
+    ]
+  },
+  "ai": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:8000/v1",
+    "model": "Qwen/Qwen3-8B",
+    "api_key_env": "NTAGENTSHIELD_AI_API_KEY",
+    "allow_remote": false,
+    "timeout": "60s"
+  }
+}
