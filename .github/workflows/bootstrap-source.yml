@@ -1,0 +1,45 @@
+name: Bootstrap NTAgentShield source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.bootstrap/**'
+      - '.github/workflows/bootstrap-source.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/source.b64.* | base64 --decode > /tmp/ntagentshield.bundle
+          echo "35d8137c24c6cb77c098deb65640aacf785b6fbc740778ec6df8dcbd0a0e4e84  /tmp/ntagentshield.bundle" | sha256sum --check -
+
+      - name: Import tested source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch /tmp/ntagentshield.bundle \
+            feat/behavioral-zero-day-hunting:refs/remotes/bundle/source
+          source_sha="$(git rev-parse refs/remotes/bundle/source)"
+          test "$source_sha" = "7c23965b2db920b82c2c7a711587a706589252c2"
+
+          current_sha="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse "${source_sha}^{tree}")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          merge_sha="$(printf '%s\n' 'feat: add behavioral zero-day hunting MVP' | git commit-tree "$source_tree" -p "$current_sha" -p "$source_sha")"
+
+          git push origin "${merge_sha}:refs/heads/main"
