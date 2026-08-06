@@ -45,6 +45,25 @@ func TestDecodeJournalRecordsAndNormalizeSSHFailure(t *testing.T) {
 	}
 }
 
+func TestJournalArgumentsDrainOldestRecordsAfterCursor(t *testing.T) {
+	args := journalArguments("cursor-value", time.Time{}, false, 256, []string{"ssh.service"}, []string{"sshd"})
+	joined := strings.Join(args, "\n")
+	for _, expected := range []string{"--lines=+256", "--after-cursor=cursor-value", "--unit=ssh.service", "--identifier=sshd"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("forward journal arguments are missing %q: %#v", expected, args)
+		}
+	}
+	if strings.Contains(joined, "--reverse") || strings.Contains(joined, "--lines=256\n") {
+		t.Fatalf("forward journal query could skip backlog entries: %#v", args)
+	}
+
+	reverse := journalArguments("", time.Time{}, true, 1, nil, nil)
+	reverseJoined := strings.Join(reverse, "\n")
+	if !strings.Contains(reverseJoined, "--lines=1") || !strings.Contains(reverseJoined, "--reverse") || strings.Contains(reverseJoined, "--lines=+1") {
+		t.Fatalf("tail initialization arguments are incorrect: %#v", reverse)
+	}
+}
+
 func TestJournalSeverityAndKind(t *testing.T) {
 	if journalSeverity("2") != "critical" || journalSeverity("6") != "info" {
 		t.Fatal("journald priority mapping changed unexpectedly")
