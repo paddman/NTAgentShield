@@ -1,0 +1,34 @@
+id: BZH-DB-001
+title: Database bulk read followed by dump staging and external transfer
+description: Detects data theft behavior across database, file, and network telemetry without depending on a known query string.
+enabled: true
+severity: critical
+confidence: 0.9
+window_seconds: 600
+ordered: true
+group_by: [tenant_id, asset_id]
+tags:
+  - behavioral-zero-day
+  - database
+  - exfiltration
+  - attack.t1213
+  - attack.t1041
+steps:
+  - name: bulk_database_read
+    event_types: [database.query]
+    where:
+      - field: database.rows_returned
+        op: gte
+        value: 100000
+  - name: dump_or_archive_written
+    event_types: [file.write]
+    where:
+      - field: file.path
+        op: regex
+        value: '(?i)(\.sql|\.dump|\.bak|\.csv|\.zip|\.7z|\.tar|\.gz)$'
+  - name: external_transfer
+    event_types: [network.connect, network.transfer]
+    where:
+      - field: network.dst.ip
+        op: is_public_ip
+        value: true

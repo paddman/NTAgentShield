@@ -1,0 +1,36 @@
+id: BZH-DEF-001
+title: Security telemetry disabled before privileged execution and egress
+description: Detects tampering with protection or logging followed by execution and network activity.
+enabled: true
+severity: critical
+confidence: 0.91
+window_seconds: 180
+ordered: true
+group_by: [tenant_id, asset_id]
+tags:
+  - behavioral-zero-day
+  - defense-evasion
+  - attack.t1562.001
+  - attack.t1059
+steps:
+  - name: security_control_tampered
+    event_types: [security.control_change, service.stop, audit.policy_change]
+    where:
+      - field: data.target
+        op: regex
+        value: '(?i)(defender|edr|antivirus|sysmon|auditd|firewall|logging|telemetry)'
+  - name: privileged_interpreter_started
+    event_types: [process.start]
+    where:
+      - field: process.name
+        op: regex
+        value: '^(powershell|pwsh|cmd|bash|sh|python[0-9.]*)(\.exe)?$'
+      - field: actor.user.is_admin
+        op: eq
+        value: true
+  - name: external_connection
+    event_types: [network.connect]
+    where:
+      - field: network.dst.ip
+        op: is_public_ip
+        value: true

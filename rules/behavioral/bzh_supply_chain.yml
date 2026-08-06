@@ -1,0 +1,36 @@
+id: BZH-SUPPLY-001
+title: Dependency tooling wrote an executable that ran and immediately contacted the internet
+description: Behavior-first detection for compromised packages, build hooks, or developer tooling.
+enabled: true
+severity: high
+confidence: 0.84
+window_seconds: 300
+ordered: true
+group_by: [tenant_id, asset_id]
+tags:
+  - behavioral-zero-day
+  - supply-chain
+  - attack.t1195.001
+  - attack.t1059
+steps:
+  - name: package_or_build_tool_writes_executable
+    event_types: [file.write]
+    where:
+      - field: process.name
+        op: regex
+        value: '^(npm|yarn|pnpm|pip|pip3|poetry|cargo|go|maven|mvn|gradle|nuget|dotnet)(\.exe)?$'
+      - field: file.path
+        op: regex
+        value: '(?i)(node_modules|site-packages|target|bin|obj|vendor).*(\.exe|\.dll|\.so|\.dylib|\.js|\.py|\.sh)$'
+  - name: new_artifact_executes
+    event_types: [process.start]
+    where:
+      - field: parent_process.name
+        op: regex
+        value: '^(npm|yarn|pnpm|pip|pip3|poetry|cargo|go|maven|mvn|gradle|nuget|dotnet|node|python[0-9.]*)(\.exe)?$'
+  - name: first_run_external_egress
+    event_types: [network.connect]
+    where:
+      - field: network.dst.ip
+        op: is_public_ip
+        value: true
