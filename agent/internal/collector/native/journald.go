@@ -76,21 +76,7 @@ func (s *journalSource) Poll(ctx context.Context) (Batch, []error) {
 }
 
 func (s *journalSource) query(ctx context.Context, afterCursor string, since time.Time, reverse bool, maximum int) ([]map[string]interface{}, error) {
-	args := []string{"--no-pager", "--quiet", "--all", "--output=json", fmt.Sprintf("--lines=%d", maximum)}
-	if reverse {
-		args = append(args, "--reverse")
-	}
-	if afterCursor != "" {
-		args = append(args, "--after-cursor="+afterCursor)
-	} else if !since.IsZero() {
-		args = append(args, fmt.Sprintf("--since=@%d", since.UTC().Unix()))
-	}
-	for _, unit := range s.config.Units {
-		args = append(args, "--unit="+unit)
-	}
-	for _, identifier := range s.config.Identifiers {
-		args = append(args, "--identifier="+identifier)
-	}
+	args := journalArguments(afterCursor, since, reverse, maximum, s.config.Units, s.config.Identifiers)
 	output, err := runCommand(ctx, s.timeout, "journalctl", args...)
 	if err != nil {
 		return nil, fmt.Errorf("journald source %s: %w", s.config.ID, err)
@@ -100,6 +86,29 @@ func (s *journalSource) query(ctx context.Context, afterCursor string, since tim
 		return nil, fmt.Errorf("decode journald source %s: %w", s.config.ID, err)
 	}
 	return records, nil
+}
+
+func journalArguments(afterCursor string, since time.Time, reverse bool, maximum int, units, identifiers []string) []string {
+	lineLimit := fmt.Sprintf("--lines=+%d", maximum)
+	if reverse {
+		lineLimit = fmt.Sprintf("--lines=%d", maximum)
+	}
+	args := []string{"--no-pager", "--quiet", "--all", "--output=json", lineLimit}
+	if reverse {
+		args = append(args, "--reverse")
+	}
+	if afterCursor != "" {
+		args = append(args, "--after-cursor="+afterCursor)
+	} else if !since.IsZero() {
+		args = append(args, fmt.Sprintf("--since=@%d", since.UTC().Unix()))
+	}
+	for _, unit := range units {
+		args = append(args, "--unit="+unit)
+	}
+	for _, identifier := range identifiers {
+		args = append(args, "--identifier="+identifier)
+	}
+	return args
 }
 
 func decodeJournalRecords(content string) ([]map[string]interface{}, error) {
