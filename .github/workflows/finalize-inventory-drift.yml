@@ -1,0 +1,308 @@
+name: Finalize inventory drift integration
+
+on:
+  push:
+    branches:
+      - feat/inventory-drift-correlation
+    paths:
+      - .github/workflows/finalize-inventory-drift.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/inventory-drift-correlation
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: agent/go.mod
+      - name: Integrate drift pipeline, format, and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          collector = Path('agent/internal/inventory/collector.go')
+          text = collector.read_text()
+          start = text.index('func (c *Collector) Event(ctx context.Context)')
+          end = text.index('\nfunc collectInterfaces', start)
+          replacement = '''func (c *Collector) Event(ctx context.Context) (model.Event, error) {
+\tsnapshot, err := c.Collect(ctx)
+\treturn EventFromSnapshot(snapshot), err
+}
+
+func EventFromSnapshot(snapshot Snapshot) model.Event {
+\tips := make([]string, 0)
+\tfor _, iface := range snapshot.Interfaces {
+\t\tif iface.IsLoopback {
+\t\t\tcontinue
+\t\t}
+\t\tfor _, address := range iface.Addresses {
+\t\t\thost, _, splitErr := net.ParseCIDR(address)
+\t\t\tif splitErr == nil {
+\t\t\t\tips = append(ips, host.String())
+\t\t\t} else if parsed := net.ParseIP(address); parsed != nil {
+\t\t\t\tips = append(ips, parsed.String())
+\t\t\t}
+\t\t}
+\t}
+\tsort.Strings(ips)
+\tevent := model.Event{
+\t\tKind:     "asset.inventory",
+\t\tSeverity: model.SeverityInfo,
+\t\tTrust:    model.TrustUntrustedTelemetry,
+\t\tAsset: model.Asset{
+\t\t\tHostname: snapshot.Hostname,
+\t\t\tOS:       snapshot.OS,
+\t\t\tIPs:      uniqueStrings(ips),
+\t\t},
+\t\tMessage: "periodic host asset inventory",
+\t\tAttributes: map[string]interface{}{
+\t\t\t"inventory": snapshot,
+\t\t},
+\t\tProvenance: model.Provenance{
+\t\t\tSource:    "local-host",
+\t\t\tCollector: "native-inventory",
+\t\t},
+\t}
+\tevent.Prepare()
+\treturn event
+}
+'''
+          collector.write_text(text[:start] + replacement + text[end:])
+
+          config = Path('agent/internal/config/config.go')
+          text = config.read_text()
+          if 'type InventoryDrift struct' not in text:
+              text = text.replace('type Inventory struct {', '''type InventoryDrift struct {
+\tEnabled   bool `json:"enabled"`
+\tMaxEvents int  `json:"max_events"`
+}
+
+type Inventory struct {''', 1)
+          if '\tDrift            InventoryDrift' not in text:
+              text = text.replace('\tMaxItems         int    `json:"max_items"`\n}', '\tMaxItems         int            `json:"max_items"`\n\tDrift            InventoryDrift `json:"drift"`\n}', 1)
+          default_needle = '\t\t\tMaxItems:         512,\n\t\t},\n'
+          default_replacement = '''\t\t\tMaxItems:         512,
+\t\t\tDrift: InventoryDrift{
+\t\t\t\tEnabled:   true,
+\t\t\t\tMaxEvents: 256,
+\t\t\t},
+\t\t},
+'''
+          if '\t\t\tDrift: InventoryDrift{' not in text:
+              if default_needle not in text:
+                  raise SystemExit('inventory default insertion point not found')
+              text = text.replace(default_needle, default_replacement, 1)
+          defaults_needle = '''\tif c.Inventory.MaxItems <= 0 {
+\t\tc.Inventory.MaxItems = 512
+\t}
+'''
+          defaults_replacement = defaults_needle + '''\tif c.Inventory.Drift.MaxEvents <= 0 {
+\t\tc.Inventory.Drift.MaxEvents = 256
+\t}
+'''
+          if 'c.Inventory.Drift.MaxEvents = 256' not in text:
+              if defaults_needle not in text:
+                  raise SystemExit('inventory apply-default insertion point not found')
+              text = text.replace(defaults_needle, defaults_replacement, 1)
+          validation_needle = '''\t\tif c.Inventory.MaxItems < 1 || c.Inventory.MaxItems > 10000 {
+\t\t\treturn errors.New("inventory.max_items must be between 1 and 10000")
+\t\t}
+'''
+          validation_replacement = validation_needle + '''\t\tif c.Inventory.Drift.Enabled && (c.Inventory.Drift.MaxEvents < 1 || c.Inventory.Drift.MaxEvents > 5000) {
+\t\t\treturn errors.New("inventory.drift.max_events must be between 1 and 5000")
+\t\t}
+'''
+          if 'inventory.drift.max_events must be between 1 and 5000' not in text:
+              if validation_needle not in text:
+                  raise SystemExit('inventory validation insertion point not found')
+              text = text.replace(validation_needle, validation_replacement, 1)
+          config.write_text(text)
+
+          config_test = Path('agent/internal/config/config_test.go')
+          text = config_test.read_text()
+          if 'TestLoadAppliesInventoryDriftDefaults' not in text:
+              text += '''
+
+func TestLoadAppliesInventoryDriftDefaults(t *testing.T) {
+\tdir := t.TempDir()
+\tpath := filepath.Join(dir, "config.json")
+\tcontent := `{"poll_interval":"1s","api":{"enabled":false},"inventory":{"enabled":true,"interval":"15m","command_timeout":"10s","max_items":512,"drift":{"enabled":true}}}`
+\tif err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tcfg, err := Load(path)
+\tif err != nil {
+\t\tt.Fatal(err)
+\t}
+\tif !cfg.Inventory.Drift.Enabled || cfg.Inventory.Drift.MaxEvents != 256 {
+\t\tt.Fatalf("unexpected inventory drift defaults: %#v", cfg.Inventory.Drift)
+\t}
+}
+
+func TestLoadRejectsUnsafeInventoryDriftCap(t *testing.T) {
+\tdir := t.TempDir()
+\tpath := filepath.Join(dir, "config.json")
+\tcontent := `{"poll_interval":"1s","api":{"enabled":false},"inventory":{"enabled":true,"interval":"15m","command_timeout":"10s","max_items":512,"drift":{"enabled":true,"max_events":5001}}}`
+\tif err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tif _, err := Load(path); err == nil {
+\t\tt.Fatal("expected unsafe inventory drift event cap to be rejected")
+\t}
+}
+'''
+          config_test.write_text(text)
+
+          runtime = Path('agent/internal/agent/runtime.go')
+          text = runtime.read_text()
+          if '\t"runtime"\n' not in text:
+              text = text.replace('\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n', 1)
+          if 'internal/inventorydrift' not in text:
+              text = text.replace('\t"github.com/paddman/NTAgentShield/internal/inventory"\n', '\t"github.com/paddman/NTAgentShield/internal/inventory"\n\t"github.com/paddman/NTAgentShield/internal/inventorydrift"\n', 1)
+          if '\tinventoryDrift     *inventorydrift.Store' not in text:
+              text = text.replace('\tinventoryCollector *inventory.Collector\n\tinventoryInterval  time.Duration\n', '\tinventoryCollector *inventory.Collector\n\tinventoryInterval  time.Duration\n\tinventoryDrift     *inventorydrift.Store\n\tinventoryDriftMax  int\n', 1)
+          if '\tinventoryDriftCount atomic.Uint64' not in text:
+              text = text.replace('\tnativeEventCount   atomic.Uint64\n', '\tnativeEventCount   atomic.Uint64\n\tinventoryDriftCount atomic.Uint64\n', 1)
+          if '\tInventoryDriftEnabled bool' not in text:
+              text = text.replace('\tInventoryInterval string         `json:"inventory_interval,omitempty"`\n', '\tInventoryInterval string         `json:"inventory_interval,omitempty"`\n\tInventoryDriftEnabled bool       `json:"inventory_drift_enabled"`\n\tInventoryDriftEvents uint64      `json:"inventory_drift_events"`\n', 1)
+          setup_needle = '''\t\truntime.inventoryCollector = collector
+\t\truntime.inventoryInterval = interval
+\t}
+\treturn runtime, nil
+'''
+          setup_replacement = '''\t\truntime.inventoryCollector = collector
+\t\truntime.inventoryInterval = interval
+\t\tif cfg.Inventory.Drift.Enabled {
+\t\t\tdriftStore, driftErr := inventorydrift.Open(cfg.DataDir)
+\t\t\tif driftErr != nil {
+\t\t\t\t_ = journal.Close()
+\t\t\t\treturn nil, fmt.Errorf("initialize inventory drift baseline: %w", driftErr)
+\t\t\t}
+\t\t\truntime.inventoryDrift = driftStore
+\t\t\truntime.inventoryDriftMax = cfg.Inventory.Drift.MaxEvents
+\t\t}
+\t}
+\treturn runtime, nil
+'''
+          if 'initialize inventory drift baseline' not in text:
+              if setup_needle not in text:
+                  raise SystemExit('runtime inventory setup insertion point not found')
+              text = text.replace(setup_needle, setup_replacement, 1)
+          startup_needle = '\t\t"inventory_interval": r.cfg.Inventory.Interval,\n'
+          if '"inventory_drift_enabled"' not in text:
+              text = text.replace(startup_needle, startup_needle + '\t\t"inventory_drift_enabled": r.inventoryDrift != nil,\n', 1)
+          journal_needle = '''\tif _, err := r.journal.Append("agent.start", startup); err != nil {
+\t\treturn err
+\t}
+'''
+          journal_replacement = journal_needle + '''\tif r.inventoryDrift != nil && r.inventoryDrift.Warning() != nil {
+\t\tintegrityEvent := inventorydrift.IntegrityEvent(r.hostname, runtime.GOOS, r.inventoryDrift.Warning(), r.inventoryDrift.QuarantinedPath())
+\t\tif _, err := r.process(integrityEvent); err != nil {
+\t\t\treturn fmt.Errorf("record inventory baseline integrity event: %w", err)
+\t\t}
+\t}
+'''
+          if 'record inventory baseline integrity event' not in text:
+              text = text.replace(journal_needle, journal_replacement, 1)
+          collect_start = text.index('func (r *Runtime) collectInventory(ctx context.Context, force bool) {')
+          collect_end = text.index('\nfunc (r *Runtime) recordCollectorError', collect_start)
+          collect_replacement = '''func (r *Runtime) collectInventory(ctx context.Context, force bool) {
+\tif r.inventoryCollector == nil || ctx.Err() != nil {
+\t\treturn
+\t}
+\tlastNano := r.lastInventoryNano.Load()
+\tif !force && lastNano != 0 && time.Since(time.Unix(0, lastNano)) < r.inventoryInterval {
+\t\treturn
+\t}
+\tsnapshot, err := r.inventoryCollector.Collect(ctx)
+\tif err != nil {
+\t\tr.recordCollectorError("native-inventory", err)
+\t\treturn
+\t}
+\tif _, err := r.process(inventory.EventFromSnapshot(snapshot)); err != nil {
+\t\tr.recordCollectorError("native-inventory", err)
+\t\treturn
+\t}
+\tdriftEvents := 0
+\tif r.inventoryDrift != nil {
+\t\tplan, err := r.inventoryDrift.Plan(snapshot, r.inventoryDriftMax)
+\t\tif err != nil {
+\t\t\tr.recordCollectorError("inventory-drift/plan", err)
+\t\t\treturn
+\t\t}
+\t\tfor _, event := range plan.Events {
+\t\t\tif _, err := r.process(event); err != nil {
+\t\t\t\tr.recordCollectorError("inventory-drift/event", err)
+\t\t\t\treturn
+\t\t\t}
+\t\t\tdriftEvents++
+\t\t}
+\t\tif err := r.inventoryDrift.Commit(plan); err != nil {
+\t\t\tr.recordCollectorError("inventory-drift/commit", err)
+\t\t\treturn
+\t\t}
+\t}
+\tcollectedAt := time.Now().UTC()
+\tr.lastInventoryNano.Store(collectedAt.UnixNano())
+\tr.inventoryCount.Add(1)
+\tr.inventoryDriftCount.Add(uint64(driftEvents))
+\tr.logger.Printf("asset inventory collected processes=%t services=%t listeners=%t software=%t drift_events=%d", r.cfg.Inventory.IncludeProcesses, r.cfg.Inventory.IncludeServices, r.cfg.Inventory.IncludeListeners, r.cfg.Inventory.IncludeSoftware, driftEvents)
+}
+'''
+          text = text[:collect_start] + collect_replacement + text[collect_end:]
+          status_needle = '\t\tInventoryInterval: r.cfg.Inventory.Interval,\n'
+          if 'InventoryDriftEnabled:' not in text:
+              text = text.replace(status_needle, status_needle + '\t\tInventoryDriftEnabled: r.inventoryDrift != nil,\n\t\tInventoryDriftEvents: r.inventoryDriftCount.Load(),\n', 1)
+          runtime.write_text(text)
+
+          engine = Path('agent/internal/detection/engine.go')
+          text = engine.read_text()
+          if 'inventoryDriftRule{},' not in text:
+              needle = '\t\t\tnativeHighSignalRule{},\n'
+              if needle not in text:
+                  raise SystemExit('detection registration point not found')
+              text = text.replace(needle, needle + '\t\t\tinventoryDriftRule{},\n', 1)
+          engine.write_text(text)
+
+          for path in [Path('agent/config/agent.example.json'), Path('agent/config/windows.example.json'), Path('agent/config/linux.example.json')]:
+              data = json.loads(path.read_text())
+              inventory = data.setdefault('inventory', {})
+              inventory['drift'] = {'enabled': True, 'max_events': 256}
+              path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+          PY
+
+          gofmt -w \
+            agent/internal/inventory/collector.go \
+            agent/internal/inventorydrift/*.go \
+            agent/internal/config/config.go \
+            agent/internal/config/config_test.go \
+            agent/internal/agent/runtime.go \
+            agent/internal/detection/engine.go \
+            agent/internal/detection/inventory_drift.go \
+            agent/internal/detection/inventory_drift_test.go
+
+          rm -f .github/workflows/finalize-inventory-drift.yml
+          git diff --check
+
+          cd agent
+          go test ./...
+          go vet ./...
+          cd ..
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(agent): integrate inventory drift evidence pipeline'
+          git push origin HEAD:feat/inventory-drift-correlation
