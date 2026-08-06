@@ -1,6 +1,9 @@
 package redact
 
 import (
+	"bytes"
+	"encoding/json"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -13,6 +16,8 @@ var patterns = []struct {
 }{
 	{regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}`), `${1}[REDACTED]`},
 	{regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*([^\s,;]+)`), `${1}=[REDACTED]`},
+	{regexp.MustCompile(`(?i)(--?(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^:/\s]+:)[^@\s/]+@`), `${1}[REDACTED]@`},
 	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), `[REDACTED_AWS_ACCESS_KEY]`},
 	{regexp.MustCompile(`(?i)-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (RSA |EC |OPENSSH )?PRIVATE KEY-----`), `[REDACTED_PRIVATE_KEY]`},
 	{regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`), `[REDACTED_PAYMENT_NUMBER]`},
@@ -34,11 +39,15 @@ func Event(event *model.Event) {
 	event.Process.CommandLine = String(event.Process.CommandLine)
 	event.HTTP.Query = String(event.HTTP.Query)
 	event.HTTP.UserAgent = String(event.HTTP.UserAgent)
-	event.Attributes = mapValue(event.Attributes).(map[string]interface{})
+	if attributes, ok := mapValue(event.Attributes).(map[string]interface{}); ok {
+		event.Attributes = attributes
+	}
 }
 
 func mapValue(value interface{}) interface{} {
 	switch typed := value.(type) {
+	case nil:
+		return nil
 	case string:
 		return String(typed)
 	case []string:
@@ -56,8 +65,7 @@ func mapValue(value interface{}) interface{} {
 	case map[string]interface{}:
 		result := make(map[string]interface{}, len(typed))
 		for key, item := range typed {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") {
+			if isSensitiveKey(key) {
 				result[key] = "[REDACTED]"
 				continue
 			}
@@ -65,6 +73,59 @@ func mapValue(value interface{}) interface{} {
 		}
 		return result
 	default:
+		normalized, ok := normalizeComposite(typed)
+		if ok {
+			return mapValue(normalized)
+		}
 		return value
+	}
+}
+
+func isSensitiveKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, fragment := range []string{
+		"password",
+		"passwd",
+		"secret",
+		"token",
+		"api_key",
+		"apikey",
+		"private_key",
+		"connection_string",
+		"credential",
+	} {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeComposite(value interface{}) (interface{}, bool) {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return nil, false
+	}
+	for reflected.Kind() == reflect.Interface || reflected.Kind() == reflect.Ptr {
+		if reflected.IsNil() {
+			return nil, true
+		}
+		reflected = reflected.Elem()
+	}
+	switch reflected.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+		content, err := json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
+		decoder := json.NewDecoder(bytes.NewReader(content))
+		decoder.UseNumber()
+		var normalized interface{}
+		if err := decoder.Decode(&normalized); err != nil {
+			return nil, false
+		}
+		return normalized, true
+	default:
+		return nil, false
 	}
 }

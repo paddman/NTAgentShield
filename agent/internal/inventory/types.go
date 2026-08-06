@@ -22,8 +22,8 @@ type Snapshot struct {
 	OSVersion     string             `json:"os_version,omitempty"`
 	KernelVersion string             `json:"kernel_version,omitempty"`
 	Architecture  string             `json:"architecture"`
-	MachineID     string             `json:"machine_id,omitempty"`
-	BootID        string             `json:"boot_id,omitempty"`
+	MachineIDHash string             `json:"machine_id_hash,omitempty"`
+	BootIDHash    string             `json:"boot_id_hash,omitempty"`
 	UptimeSeconds int64              `json:"uptime_seconds,omitempty"`
 	CPUCount      int                `json:"cpu_count"`
 	GoVersion     string             `json:"go_version"`

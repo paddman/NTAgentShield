@@ -1,72 +1,67 @@
-# NTAgentShield
+# NTAgentShield Endpoint Agent
 
 **AI Security Operator for Windows and Linux servers/endpoints**
 
-NTAgentShield is an endpoint/server security agent that collects operational and security telemetry, normalizes evidence, applies deterministic detections, performs read-only AI investigation, and places every state-changing response behind a policy and approval boundary.
+The Go agent collects local operational and security telemetry, normalizes evidence, applies deterministic detections, records tamper-evident evidence, and performs optional read-only AI investigation. Every state-changing response remains behind a deterministic policy and approval boundary.
 
-> ภาษาไทย: NTAgentShield คือ Agent ความปลอดภัยที่ติดตั้งใน Server หรือ Endpoint เพื่ออ่าน Log, ตรวจพฤติกรรม, ตรวจ Source Code, เชื่อมเหตุการณ์ และให้ AI ช่วยสืบสวน โดย AI ไม่มีสิทธิ์รัน shell หรือเปลี่ยนระบบโดยตรง
+> ภาษาไทย: Agent ติดตั้งใน Server หรือ Endpoint เพื่อเก็บ Asset Inventory, อ่าน Log, ตรวจพฤติกรรม, ตรวจ Source Code และให้ AI ช่วยสืบสวน โดย AI ไม่มีสิทธิ์รัน shell หรือเปลี่ยนระบบโดยตรง
 
-## Foundation status
+## Implemented
 
-This repository currently implements the secure foundation, not a finished EDR product. The code is runnable and tested, while deep ETW/eBPF sensors, central multi-tenant fleet management, signed updates, and production containment adapters remain on the roadmap.
-
-Implemented now:
-
-- Cross-platform Go agent daemon and CLI with no third-party runtime dependencies.
-- File-tail collectors and parsers for IIS W3C, Nginx combined logs, MySQL general logs, Syslog, raw text, and normalized JSON events.
+- Cross-platform Go agent daemon and operator CLI with no third-party runtime dependencies.
+- Native Windows/Linux asset inventory for OS, interfaces, processes, services, listening sockets, and installed software.
+- File-tail collectors and parsers for IIS W3C, Nginx combined, MySQL general log, Syslog, raw text, and normalized JSON events.
 - Deterministic detections for prompt injection in telemetry, encoded PowerShell, web-worker-to-shell execution, path traversal, high-risk SQL, security-control disabling, webroot script writes, and authentication bursts.
-- Code-security scanner for hard-coded secrets, TLS verification bypass, unsafe deserialization, command execution, SQL string concatenation, dynamic evaluation, public network exposure, PHP web-shell chains, GitHub Actions trust-boundary mistakes, and remote scripts piped to shell.
-- Tamper-evident SHA-256 hash-chained evidence journal.
-- Secret redaction before persistence or AI transfer.
+- Code-security scanner for hard-coded secrets, TLS verification bypass, unsafe deserialization, command execution, SQL string concatenation, dynamic evaluation, public exposure, PHP web-shell chains, GitHub Actions trust-boundary mistakes, and remote scripts piped to shell.
+- SHA-256 hash-chained evidence journal.
+- Recursive secret redaction, including command-line flags, URI credentials, maps, arrays, and nested Go structs.
 - Typed read-only tools (`host.info`, `file.stat`, `file.sha256`, `file.read_lines`) with path allowlists.
-- Deterministic policy engine that denies generic shell tools and blocks untrusted telemetry from directly triggering state changes.
-- Loopback-only authenticated local API for health, status, and event ingestion. It deliberately exposes no command endpoint.
-- Optional OpenAI-compatible AI investigator for local Qwen/Ollama/vLLM endpoints. The request contains no tools and all evidence is explicitly marked untrusted.
+- Policy engine that denies generic shell tools and prevents untrusted telemetry from directly triggering state changes.
+- Loopback-only authenticated local API for health, status, and event ingestion. It exposes no command endpoint.
+- Optional OpenAI-compatible investigator for local Qwen/Ollama/vLLM endpoints. The request contains no tools and all evidence is marked untrusted.
 
 ## Security invariants
 
-These rules are architectural, not polite suggestions written in a prompt:
-
-1. Logs, HTTP fields, SQL comments, source comments, RAG documents, and network data are always untrusted evidence.
+1. Logs, HTTP fields, SQL comments, source comments, process command lines, RAG documents, and network data are untrusted evidence.
 2. The AI investigator is read-only and receives no tool definitions.
 3. There is no generic `shell.exec`, `cmd.exec`, or `powershell.exec` tool.
 4. Tool risk is defined by the registered tool, never by model-supplied arguments.
 5. Untrusted evidence cannot directly trigger containment, modification, or destructive actions.
-6. Approvals are bound to the digest of one exact action and expire.
+6. Approvals bind to the digest of one exact action and expire.
 7. Local file tools are restricted to configured roots and resolve symlinks before access.
-8. Raw secrets are redacted before journal persistence and AI transfer.
-9. The local HTTP API binds to loopback only and has no action endpoint.
-10. Zero-day protection is behavior-based risk reduction, not a dishonest promise to detect every unknown vulnerability.
+8. Secrets are redacted before journal persistence or AI transfer.
+9. Machine and boot identifiers are stored as scoped SHA-256 hashes rather than raw OS identifiers.
+10. Native inventory commands and arguments are fixed in code, bounded by timeouts and result caps, and cannot be supplied by a model.
+11. The local HTTP API binds to loopback only and has no action endpoint.
+12. Zero-day protection is behavior-based risk reduction, not a promise to detect every unknown vulnerability.
 
 See [Threat Model](docs/THREAT_MODEL.md), [AI Security](docs/AI_SECURITY.md), and [Response Safety](docs/RESPONSE_SAFETY.md).
 
 ## Architecture
 
 ```text
-Log / Event / Code / HTTP ingest
-             |
-             v
-     Parser + Normalizer
-             |
-             v
-      Secret Redaction
-             |
-             +--------------------+
-             |                    |
-             v                    v
- Tamper-evident Journal    Deterministic Detection
-                                  |
-                                  v
-                              Findings
-                                  |
-                    +-------------+-------------+
-                    |                           |
-                    v                           v
-          Read-only AI Investigator      Policy + Typed Tools
-          (no tools, no actions)         (observe-only today)
+Native Inventory / Log / Event / Code / HTTP ingest
+                        |
+                        v
+                Parser + Normalizer
+                        |
+                        v
+                 Secret Redaction
+                        |
+                        +--------------------+
+                        |                    |
+                        v                    v
+           Tamper-evident Journal    Deterministic Detection
+                                             |
+                                             v
+                                         Findings
+                                             |
+                               +-------------+-------------+
+                               |                           |
+                               v                           v
+                     Read-only AI Investigator      Policy + Typed Tools
+                     (no tools, no actions)         (observe-only today)
 ```
-
-The future NT Shield control plane will add tenant enrollment, fleet policy, centralized correlation, model hosting, rule distribution, incident workflow, and reporting. Endpoint privilege separation remains local and explicit.
 
 ## Quick start
 
@@ -74,10 +69,43 @@ Requirements: Go 1.23 or later.
 
 ```bash
 go test ./...
-go build ./cmd/ntagentshield-agent ./cmd/ntagentshieldctl
+go build ./cmd/ntagentshield-agent \
+  ./cmd/ntagentshieldctl \
+  ./cmd/ntagentshield-inventory
 ```
 
-Run the deterministic demo against IIS logs:
+### Inspect local asset inventory
+
+```bash
+go run ./cmd/ntagentshield-inventory \
+  --processes=true \
+  --services=true \
+  --listeners=true \
+  --software=true \
+  --max-items 512 \
+  --command-timeout 15s
+```
+
+Inventory is collected at agent startup and then according to the configured interval:
+
+```json
+{
+  "inventory": {
+    "enabled": true,
+    "interval": "15m",
+    "command_timeout": "15s",
+    "include_processes": true,
+    "include_services": true,
+    "include_listeners": true,
+    "include_software": true,
+    "max_items": 1000
+  }
+}
+```
+
+Linux uses `/proc`, `/etc/os-release`, systemd, and `dpkg-query` or `rpm`. Windows uses fixed WMI/PowerShell queries, Registry reads, and `netstat`, with limited command fallbacks. No command text is accepted from the AI or telemetry.
+
+### Scan IIS logs
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-log \
@@ -85,35 +113,35 @@ go run ./cmd/ntagentshieldctl scan-log \
   --file examples/logs/iis.log
 ```
 
-Scan a normalized endpoint event:
+### Scan a normalized endpoint event
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-event \
   --file examples/events/web-worker-shell.json
 ```
 
-Scan source code:
+### Scan source code
 
 ```bash
 go run ./cmd/ntagentshieldctl scan-code \
   --path examples/code
 ```
 
-Validate configuration and policy:
+### Validate configuration and policy
 
 ```bash
 go run ./cmd/ntagentshieldctl doctor \
   --config config/agent.example.json
 ```
 
-Run the agent using demo sources:
+### Run the agent
 
 ```bash
 go run ./cmd/ntagentshield-agent \
   --config config/agent.example.json
 ```
 
-The API token is generated at `data/agent-api.token`. Query local status:
+The API token is generated in the configured data directory. Query local status:
 
 ```bash
 TOKEN="$(cat data/agent-api.token)"
@@ -121,7 +149,9 @@ curl -H "Authorization: Bearer ${TOKEN}" \
   http://127.0.0.1:9477/v1/status
 ```
 
-Verify the evidence chain:
+Status includes `inventory_enabled`, `inventory_runs`, `last_inventory_at`, and `inventory_interval`.
+
+### Verify the evidence chain
 
 ```bash
 go run ./cmd/ntagentshieldctl verify-store \
@@ -139,7 +169,7 @@ go run ./cmd/ntagentshieldctl ai-analyze \
   --objective "Explain the likely exploit chain and missing evidence"
 ```
 
-Recommended local targets include Qwen behind vLLM/SGLang/Ollama or another OpenAI-compatible service. The model produces analysis only. It cannot invoke tools or apply changes.
+The model produces analysis only. It cannot invoke tools or apply changes.
 
 ## Supported input formats
 
@@ -157,6 +187,7 @@ Planned collectors are listed in [Telemetry Matrix](docs/TELEMETRY_MATRIX.md).
 ## CLI commands
 
 ```text
+ntagentshield-inventory
 ntagentshieldctl doctor
 ntagentshieldctl scan-log
 ntagentshieldctl scan-event
@@ -181,42 +212,39 @@ go run ./cmd/ntagentshieldctl policy-check \
 
 The result must be denied because attacker-controlled evidence is not an operator.
 
-## Build targets
-
-```bash
-make fmt
-make test
-make vet
-make build
-make cross
-```
-
-`make cross` builds Windows amd64 and Linux amd64 binaries. Service templates are available under `packaging/`.
-
 ## Repository layout
 
 ```text
-cmd/                    Agent daemon and operator CLI
-internal/agent/         Runtime and event pipeline
-internal/collector/     Log collectors
-internal/parser/        IIS, Nginx, MySQL, Syslog, JSON, raw parsers
-internal/detection/     Deterministic behavior and correlation rules
-internal/codescan/      Source-code security scanner
-internal/ai/            Read-only OpenAI-compatible investigator
-internal/policy/        Action policy and exact-action approvals
-internal/tools/         Typed, allowlisted read-only tools
-internal/store/         Hash-chained evidence journal
-config/                 Demo and OS configuration templates
-policies/               Deterministic action policy
-rules/                  Detection catalog metadata
-schemas/                Event, finding, and action schemas
-docs/                   Architecture, threat model, safety, roadmap
-packaging/               systemd and Windows service helpers
+cmd/                         Agent daemon, inventory CLI, operator CLI
+internal/agent/              Runtime and event pipeline
+internal/inventory/          Native Windows/Linux asset inventory
+internal/collector/          Log collectors
+internal/parser/             IIS, Nginx, MySQL, Syslog, JSON, raw parsers
+internal/detection/          Deterministic behavior and correlation rules
+internal/codescan/           Source-code security scanner
+internal/ai/                 Read-only OpenAI-compatible investigator
+internal/policy/             Action policy and exact-action approvals
+internal/tools/              Typed, allowlisted read-only tools
+internal/store/              Hash-chained evidence journal
+config/                      Demo and OS configuration templates
+policies/                    Deterministic action policy
+rules/                       Detection catalog metadata
+schemas/                     Event, finding, and action schemas
+docs/                        Architecture, threat model, safety, roadmap
+packaging/                   systemd and Windows service helpers
 ```
+
+## Next engineering milestones
+
+- Native Windows Event Log, Sysmon, and ETW collectors.
+- Native Linux journald, auditd, and eBPF telemetry.
+- Inventory-delta detections for new services, listeners, software drift, and suspicious process ancestry.
+- Signed enrollment, mTLS policy distribution, and signed updates.
+- Production response broker for quarantine, process containment, and host isolation.
 
 ## Design relationship to Cline
 
-NTAgentShield adopts the useful operator experience of Observe/Plan/Act, structured tools, diffs, and approvals. It is not a Cline fork and does not copy Cline source code. A general coding agent and a privileged security service have radically different trust boundaries, despite the software industry occasionally pretending otherwise.
+NTAgentShield adopts the useful operator experience of Observe/Plan/Act, structured tools, diffs, and approvals. It is not a Cline fork and does not copy Cline source code. A general coding agent and a privileged security service have different trust boundaries.
 
 ## License
 

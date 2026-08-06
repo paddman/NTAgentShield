@@ -2,6 +2,8 @@ package inventory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
@@ -64,8 +66,8 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 		OSVersion:     platform.OSVersion,
 		KernelVersion: platform.KernelVersion,
 		Architecture:  runtime.GOARCH,
-		MachineID:     platform.MachineID,
-		BootID:        platform.BootID,
+		MachineIDHash: hashIdentifier("machine", platform.MachineID),
+		BootIDHash:    hashIdentifier("boot", platform.BootID),
 		UptimeSeconds: platform.UptimeSeconds,
 		CPUCount:      runtime.NumCPU(),
 		GoVersion:     runtime.Version(),
@@ -221,4 +223,13 @@ func uniqueStrings(values []string) []string {
 		last = value
 	}
 	return result
+}
+
+func hashIdentifier(scope, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(scope + "\x00" + value))
+	return hex.EncodeToString(digest[:])
 }

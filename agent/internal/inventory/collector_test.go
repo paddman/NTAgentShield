@@ -28,3 +28,18 @@ func TestCapItemsAndUniqueStrings(t *testing.T) {
 		t.Fatalf("unexpected unique values: %#v", unique)
 	}
 }
+
+func TestHashIdentifierIsScopedAndDoesNotExposeRawValue(t *testing.T) {
+	raw := "11111111-2222-3333-4444-555555555555"
+	machineHash := hashIdentifier("machine", raw)
+	bootHash := hashIdentifier("boot", raw)
+	if machineHash == "" || len(machineHash) != 64 {
+		t.Fatalf("unexpected machine identifier hash: %q", machineHash)
+	}
+	if machineHash == raw || machineHash == bootHash {
+		t.Fatalf("identifier hashing did not pseudonymize or scope the value")
+	}
+	if machineHash != hashIdentifier("machine", raw) {
+		t.Fatal("identifier hash must be stable for drift detection")
+	}
+}
