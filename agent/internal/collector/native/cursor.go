@@ -7,11 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 )
 
 const cursorVersion = 1
+
+var cursorSourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 type cursorState struct {
 	Version             int       `json:"version"`
@@ -35,6 +38,9 @@ type cursorFile struct {
 }
 
 func openCursor(dataDir, sourceID, kind string) (*cursorFile, error) {
+	if !cursorSourceIDPattern.MatchString(sourceID) {
+		return nil, fmt.Errorf("unsafe cursor source id %q", sourceID)
+	}
 	directory := filepath.Join(dataDir, "cursors")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create cursor directory: %w", err)

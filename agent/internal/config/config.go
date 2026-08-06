@@ -78,17 +78,17 @@ type Inventory struct {
 }
 
 type Config struct {
-	AgentID      string        `json:"agent_id"`
-	TenantID     string        `json:"tenant_id"`
-	DataDir      string        `json:"data_dir"`
-	PollInterval time.Duration `json:"-"`
-	Poll         string        `json:"poll_interval"`
-	Sources      []Source      `json:"sources"`
+	AgentID       string         `json:"agent_id"`
+	TenantID      string         `json:"tenant_id"`
+	DataDir       string         `json:"data_dir"`
+	PollInterval  time.Duration  `json:"-"`
+	Poll          string         `json:"poll_interval"`
+	Sources       []Source       `json:"sources"`
 	NativeSources []NativeSource `json:"native_sources"`
-	API          API           `json:"api"`
-	Tools        ToolPolicy    `json:"tools"`
-	AI           AI            `json:"ai"`
-	Inventory    Inventory     `json:"inventory"`
+	API           API            `json:"api"`
+	Tools         ToolPolicy     `json:"tools"`
+	AI            AI             `json:"ai"`
+	Inventory     Inventory      `json:"inventory"`
 }
 
 func Default() Config {

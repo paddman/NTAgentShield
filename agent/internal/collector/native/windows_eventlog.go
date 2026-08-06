@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -42,10 +43,14 @@ type windowsEventRecord struct {
 			ProcessID int `xml:"ProcessID,attr"`
 			ThreadID  int `xml:"ThreadID,attr"`
 		} `xml:"Execution"`
-		Channel     string `xml:"Channel"`
-		Computer    string `xml:"Computer"`
-		Security    struct{ UserID string `xml:"UserID,attr"` } `xml:"Security"`
-		TimeCreated struct{ SystemTime string `xml:"SystemTime,attr"` } `xml:"TimeCreated"`
+		Channel  string `xml:"Channel"`
+		Computer string `xml:"Computer"`
+		Security struct {
+			UserID string `xml:"UserID,attr"`
+		} `xml:"Security"`
+		TimeCreated struct {
+			SystemTime string `xml:"SystemTime,attr"`
+		} `xml:"TimeCreated"`
 	} `xml:"System"`
 	EventData struct {
 		Data []struct {
@@ -154,7 +159,7 @@ func decodeWindowsEvents(content string) ([]windowsEventRecord, error) {
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "eof") {
+			if err == io.EOF {
 				break
 			}
 			return nil, err
@@ -248,17 +253,17 @@ func windowsRecordToEvent(sourceID, configuredChannel string, record windowsEven
 		Message: message,
 		Attributes: map[string]interface{}{
 			"windows": map[string]interface{}{
-				"event_id":            eventID,
-				"record_id":           record.System.EventRecordID,
-				"provider":            provider,
-				"provider_guid":       record.System.Provider.GUID,
-				"channel":             channel,
-				"level":               record.System.Level,
-				"task":                record.System.Task,
-				"opcode":              record.System.Opcode,
-				"keywords":            record.System.Keywords,
-				"activity_id":         record.System.Correlation.ActivityID,
-				"related_activity_id": record.System.Correlation.RelatedActivityID,
+				"event_id":             eventID,
+				"record_id":            record.System.EventRecordID,
+				"provider":             provider,
+				"provider_guid":        record.System.Provider.GUID,
+				"channel":              channel,
+				"level":                record.System.Level,
+				"task":                 record.System.Task,
+				"opcode":               record.System.Opcode,
+				"keywords":             record.System.Keywords,
+				"activity_id":          record.System.Correlation.ActivityID,
+				"related_activity_id":  record.System.Correlation.RelatedActivityID,
 				"execution_process_id": record.System.Execution.ProcessID,
 				"execution_thread_id":  record.System.Execution.ThreadID,
 				"event_data":           data,

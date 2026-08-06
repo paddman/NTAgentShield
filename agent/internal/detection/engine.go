@@ -32,6 +32,7 @@ func New() *Engine {
 			pathTraversalRule{},
 			defenseEvasionRule{},
 			webShellWriteRule{},
+			nativeHighSignalRule{},
 		},
 		auth: newAuthFailureTracker(10, 5*time.Minute),
 	}
