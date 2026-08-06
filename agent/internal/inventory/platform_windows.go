@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	windowsOSCommand = "Get-WmiObject Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,@{Name='LastBoot';Expression={$_.ConvertToDateTime($_.LastBootUpTime).ToUniversalTime().ToString('o')}} | ConvertTo-Csv -NoTypeInformation"
-	windowsProcessCommand = "Get-WmiObject Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,WorkingSetSize | ConvertTo-Csv -NoTypeInformation"
-	windowsServiceCommand = "Get-WmiObject Win32_Service | Select-Object Name,DisplayName,State,StartMode,PathName | ConvertTo-Csv -NoTypeInformation"
+	windowsOSCommand       = "Get-WmiObject Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,@{Name='LastBoot';Expression={$_.ConvertToDateTime($_.LastBootUpTime).ToUniversalTime().ToString('o')}} | ConvertTo-Csv -NoTypeInformation"
+	windowsProcessCommand  = "Get-WmiObject Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,WorkingSetSize | ConvertTo-Csv -NoTypeInformation"
+	windowsServiceCommand  = "Get-WmiObject Win32_Service | Select-Object Name,DisplayName,State,StartMode,PathName | ConvertTo-Csv -NoTypeInformation"
 	windowsSoftwareCommand = "$paths=@('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'); Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object DisplayName,DisplayVersion,Publisher,PSPath | ConvertTo-Csv -NoTypeInformation"
 )
 

@@ -37,14 +37,14 @@ type Snapshot struct {
 }
 
 type NetworkInterface struct {
-	Name         string   `json:"name"`
-	Index        int      `json:"index"`
-	MAC          string   `json:"mac,omitempty"`
-	MTU          int      `json:"mtu,omitempty"`
-	Flags        []string `json:"flags,omitempty"`
-	Addresses    []string `json:"addresses,omitempty"`
-	IsLoopback   bool     `json:"is_loopback"`
-	IsUp         bool     `json:"is_up"`
+	Name       string   `json:"name"`
+	Index      int      `json:"index"`
+	MAC        string   `json:"mac,omitempty"`
+	MTU        int      `json:"mtu,omitempty"`
+	Flags      []string `json:"flags,omitempty"`
+	Addresses  []string `json:"addresses,omitempty"`
+	IsLoopback bool     `json:"is_loopback"`
+	IsUp       bool     `json:"is_up"`
 }
 
 type Process struct {
