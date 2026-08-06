@@ -1,0 +1,82 @@
+name: Bootstrap source tree
+
+on:
+  push:
+    branches:
+      - feat/secure-agent-foundation
+    paths:
+      - .github/workflows/bootstrap-source.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/secure-agent-foundation
+          fetch-depth: 0
+
+      - name: Restore and verify source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # One character was dropped from the first transport chunk by the
+          # text-only repository API. Recover it deterministically from the
+          # expected Git blob ID before decoding the archive.
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          path = Path('.bootstrap/source.part00')
+          broken = path.read_bytes()
+          expected = bytes.fromhex('12a4570fc4ce71cb17392b57adf69b3951b61d06')
+          alphabet = b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          header = b'blob 16000\0'
+
+          if len(broken) == 16000 and hashlib.sha1(header + broken).digest() == expected:
+              print('source.part00 already valid')
+          else:
+              if len(broken) != 15999:
+                  raise SystemExit(f'unexpected source.part00 size: {len(broken)}')
+
+              recovered = None
+              for position in range(len(broken) + 1):
+                  prefix = hashlib.sha1(header + broken[:position])
+                  suffix = broken[position:]
+                  for char in alphabet:
+                      digest = prefix.copy()
+                      digest.update(bytes((char,)))
+                      digest.update(suffix)
+                      if digest.digest() == expected:
+                          recovered = broken[:position] + bytes((char,)) + suffix
+                          print(f'recovered source.part00 at byte {position}')
+                          break
+                  if recovered is not None:
+                      break
+
+              if recovered is None:
+                  raise SystemExit('unable to recover source.part00')
+              path.write_bytes(recovered)
+          PY
+
+          cat .bootstrap/source.part* | base64 --decode > /tmp/nts-source.tar.gz
+          echo 'b8a1b47f4040d092a5e18be38030ea405422132a06e73604a0c3ca9514a773d2  /tmp/nts-source.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/nts-source.tar.gz -C .
+
+          rm -rf .bootstrap
+          rm -f .github/workflows/bootstrap-source.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'feat: add secure AI endpoint agent foundation'
+          git push origin HEAD:feat/secure-agent-foundation
