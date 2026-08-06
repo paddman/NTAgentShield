@@ -1,0 +1,24 @@
+{
+  "schema_version": "0.1",
+  "timestamp": "2026-08-06T10:03:00Z",
+  "kind": "process.start",
+  "severity": "info",
+  "trust": "untrusted_telemetry",
+  "asset": {
+    "id": "asset-web01",
+    "hostname": "web01",
+    "os": "windows"
+  },
+  "process": {
+    "pid": 8440,
+    "ppid": 7124,
+    "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "parent_image": "C:\\Windows\\System32\\inetsrv\\w3wp.exe",
+    "command_line": "powershell.exe -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkA"
+  },
+  "message": "IIS worker created PowerShell after an unusual request",
+  "provenance": {
+    "source": "windows-process-sensor",
+    "collector": "demo/json"
+  }
+}

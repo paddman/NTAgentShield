@@ -1,0 +1,6 @@
+NTAgentShield
+Copyright 2026 paddman and NTAgentShield contributors
+
+This product includes software developed for the NTAgentShield project.
+
+NTAgentShield is an original implementation. It adopts general agent-interface ideas such as observe, plan, act, typed tools, and operator approval, but does not include or copy source code from Cline.

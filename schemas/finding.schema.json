@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ntagentshield.local/schemas/finding.schema.json",
+  "title": "NTAgentShield Finding",
+  "type": "object",
+  "required": ["schema_version", "id", "timestamp", "rule_id", "title", "description", "severity", "confidence", "category", "evidence_event_ids"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "id": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "rule_id": {"type": "string"},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+    "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+    "category": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "agent_id": {"type": "string"},
+    "asset": {"type": "object"},
+    "evidence_event_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "mitre_tactics": {"type": "array", "items": {"type": "string"}},
+    "mitre_techniques": {"type": "array", "items": {"type": "string"}},
+    "attributes": {"type": "object"},
+    "recommended_steps": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

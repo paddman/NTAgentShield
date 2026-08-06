@@ -1,0 +1,32 @@
+[Unit]
+Description=NTAgentShield Security Agent
+Documentation=https://github.com/paddman/NTAgentShield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ntagentshield
+Group=ntagentshield
+ExecStart=/usr/local/bin/ntagentshield-agent --config /etc/ntagentshield/agent.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/ntagentshield
+ReadOnlyPaths=/var/log /etc/ntagentshield
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

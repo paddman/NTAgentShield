@@ -1,0 +1,4 @@
+2026-08-06T10:00:01.000000Z 12 Connect app_user@10.0.0.5 on appdb using TCP/IP
+2026-08-06T10:00:02.000000Z 12 Query SELECT id,name FROM users WHERE id=42
+2026-08-06T10:00:03.000000Z 12 Query SELECT load_file('/etc/passwd')
+2026-08-06T10:00:04.000000Z 12 Query GRANT ALL ON *.* TO 'shadow_admin'@'%'

@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "deny_tools": [
+    "shell.exec",
+    "powershell.exec",
+    "cmd.exec"
+  ],
+  "auto_allow_tools": [
+    "host.info",
+    "file.stat",
+    "file.sha256",
+    "file.read_lines"
+  ],
+  "approval_required_tools": [
+    "host.isolate",
+    "process.terminate",
+    "file.quarantine",
+    "firewall.block"
+  ],
+  "never_allow_destructive": true,
+  "deny_untrusted_state_write": true,
+  "max_action_ttl_seconds": 300
+}

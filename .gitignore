@@ -1,0 +1,23 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime data
+data/
+*.journal.jsonl
+*.offsets.json
+*.token
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage.out
+coverage.html
