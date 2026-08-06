@@ -1,0 +1,34 @@
+id: BZH-LOLBIN-001
+title: Signed utility abuse followed by C2 and persistence
+description: A commonly abused signed utility starts, connects externally, and creates persistence.
+enabled: true
+severity: critical
+base_score: 76
+confidence: 0.87
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [LOLBIN_EXECUTION, EXTERNAL_C2, PERSISTENCE_CREATED]
+mitre:
+  - tactic: Defense Evasion
+    technique_id: T1218
+    technique: System Binary Proxy Execution
+  - tactic: Persistence
+    technique_id: T1053
+    technique: Scheduled Task or Job
+steps:
+  - id: lolbin_start
+    description: A commonly abused system utility starts
+    match:
+      event_type: process.start
+      process.name|in: [rundll32.exe, regsvr32.exe, mshta.exe, installutil.exe, regasm.exe, regsvcs.exe, forfiles.exe, pcalua.exe, wsl.exe]
+  - id: lolbin_egress
+    description: The utility or immediate chain connects externally
+    within_seconds: 180
+    match:
+      event_type: network.connect
+      network.is_external: true
+  - id: persistence
+    description: A service, scheduled task, autorun, or cron entry is created
+    within_seconds: 300
+    match:
+      event_type|in: [service.create, persistence.scheduled_task, persistence.autorun, persistence.cron]

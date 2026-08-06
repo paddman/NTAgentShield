@@ -1,0 +1,19 @@
+services:
+  ntagentshield:
+    build: .
+    container_name: ntagentshield
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      NTSHIELD_DATABASE_PATH: /app/data/ntshield.db
+      NTSHIELD_RULES_PATH: /app/rules/behavioral
+      NTSHIELD_QWEN_BASE_URL: ${NTSHIELD_QWEN_BASE_URL:-http://host.docker.internal:8000/v1}
+      NTSHIELD_QWEN_API_KEY: ${NTSHIELD_QWEN_API_KEY:-EMPTY}
+      NTSHIELD_QWEN_MODEL: ${NTSHIELD_QWEN_MODEL:-Qwen/Qwen3.5-9B}
+      NTSHIELD_QWEN_ENABLED: ${NTSHIELD_QWEN_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./rules:/app/rules:ro

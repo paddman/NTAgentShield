@@ -1,0 +1,35 @@
+id: BZH-IDENTITY-001
+title: Explicit credentials escalated into remote service execution
+description: Explicit credentials are used, a privileged session is obtained, and a service is created shortly afterward.
+enabled: true
+severity: critical
+base_score: 77
+confidence: 0.88
+window_seconds: 600
+group_by: [tenant_id, asset.id]
+reason_codes: [EXPLICIT_CREDENTIALS, PRIVILEGED_SESSION, REMOTE_SERVICE_EXECUTION]
+mitre:
+  - tactic: Credential Access
+    technique_id: T1555
+    technique: Credentials from Password Stores
+  - tactic: Lateral Movement
+    technique_id: T1021
+    technique: Remote Services
+  - tactic: Execution
+    technique_id: T1569.002
+    technique: Service Execution
+steps:
+  - id: explicit_credentials
+    description: Explicit credentials are supplied
+    match:
+      event_type: auth.explicit_credentials
+  - id: privileged_logon
+    description: Special privileges are assigned to the session
+    within_seconds: 180
+    match:
+      event_type: privilege.special_logon
+  - id: service_create
+    description: A service is created after the privileged session
+    within_seconds: 300
+    match:
+      event_type: service.create
