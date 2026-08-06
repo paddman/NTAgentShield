@@ -1,0 +1,54 @@
+[Unit]
+Description=NTAgentShield Durable Evidence Forwarder
+Documentation=https://github.com/paddman/NTAgentShield
+After=network-online.target ntagentshield.service
+Wants=network-online.target
+Requires=ntagentshield.service
+
+[Service]
+Type=simple
+User=ntagentshield
+Group=ntagentshield
+StateDirectory=ntagentshield-forwarder
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/ntagentshield-forwarder \
+  --identity-dir /var/lib/ntagentshield/identity \
+  --journal /var/lib/ntagentshield/evidence.journal.jsonl \
+  --outbox-dir /var/lib/ntagentshield-forwarder \
+  --status-file /run/ntagentshield-forwarder/status.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/var/lib/ntagentshield
+ReadWritePaths=/var/lib/ntagentshield-forwarder /run/ntagentshield-forwarder
+RuntimeDirectory=ntagentshield-forwarder
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
