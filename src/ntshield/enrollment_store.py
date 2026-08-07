@@ -207,7 +207,10 @@ class EnrollmentNonceStore:
         return [self._row_to_agent(row) for row in rows]
 
     def mark_seen(self, tenant_id: str, agent_id: str, seen_at: datetime | None = None) -> bool:
-        value = (seen_at or datetime.now(UTC)).astimezone(UTC).isoformat()
+        # Fleet presence is Control Plane receipt time, not endpoint event time. Delayed outbox
+        # delivery must not make an Agent appear to move backwards in time.
+        _ = seen_at
+        value = datetime.now(UTC).isoformat()
         with self._lock:
             cursor = self._conn.execute(
                 """UPDATE agent_enrollments SET last_seen_at = ?
