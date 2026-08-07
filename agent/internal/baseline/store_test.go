@@ -1,6 +1,7 @@
 package baseline
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,8 +46,11 @@ func TestStoreRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content[len(content)/2] ^= 1
-	if err := os.WriteFile(path, content, 0o600); err != nil {
+	tampered := bytes.Replace(content, []byte(`"hostname": "host-a"`), []byte(`"hostname": "host-b"`), 1)
+	if bytes.Equal(content, tampered) {
+		t.Fatal("test could not locate signed hostname payload")
+	}
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Load(); err == nil {
