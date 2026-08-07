@@ -160,7 +160,12 @@ func (r *Runner) sync(ctx context.Context, logger *log.Logger) {
 }
 
 func (r *Runner) execute(ctx context.Context, lease Lease, request model.ActionRequest) []byte {
-	registry, err := tools.NewFoundationRegistry(r.options.PolicyFile, r.options.AllowedPaths)
+	registry, err := tools.NewResponseRegistry(r.options.PolicyFile, tools.ContainmentOptions{
+		DataDir:         r.options.DataDir,
+		IdentityKeyFile: r.options.KeyFile,
+		ControlEndpoint: r.options.TransportEndpoint,
+		AllowedPaths:    r.options.AllowedPaths,
+	})
 	if err != nil {
 		return resultJSON(lease, "failed", "unable to load active local policy/tool registry", err, nil)
 	}
