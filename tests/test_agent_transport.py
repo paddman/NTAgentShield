@@ -140,18 +140,21 @@ def test_certificate_renewal_preserves_agent_identity_and_rotates_registry(tmp_p
 
     with TestClient(app) as client:
         response = client.post("/v1/agent/certificate/renew", content=body, headers=headers)
-    assert response.status_code == 200, response.text
+        assert response.status_code == 200, response.text
 
-    after = app.state.ntshield.enrollment_nonces.get_agent("tenant-a", "agent-a")
-    assert after is not None
-    assert after.rotation_count == 1
-    assert after.certificate_pem != before.certificate_pem
-    renewed = x509.load_pem_x509_certificate(response.json()["certificate_pem"].encode("ascii"))
-    assert renewed.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    ) == private_key.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
+        after = app.state.ntshield.enrollment_nonces.get_agent("tenant-a", "agent-a")
+        assert after is not None
+        assert after.rotation_count == 1
+        assert after.certificate_pem != before.certificate_pem
+
+        renewed = x509.load_pem_x509_certificate(
+            response.json()["certificate_pem"].encode("ascii")
+        )
+        assert renewed.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        ) == private_key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
 
 
 def test_certificate_renewal_rejects_identity_key_replacement(tmp_path) -> None:
