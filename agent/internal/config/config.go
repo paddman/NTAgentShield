@@ -79,16 +79,20 @@ type Inventory struct {
 }
 
 type Transport struct {
-	Enabled       bool   `json:"enabled"`
-	Endpoint      string `json:"endpoint"`
-	CertFile      string `json:"cert_file"`
-	KeyFile       string `json:"key_file"`
-	CAFile        string `json:"ca_file"`
-	ServerName    string `json:"server_name,omitempty"`
-	Timeout       string `json:"timeout"`
-	FlushInterval string `json:"flush_interval"`
-	BatchSize     int    `json:"batch_size"`
-	PendingWarn   int    `json:"pending_warn"`
+	Enabled            bool   `json:"enabled"`
+	Endpoint           string `json:"endpoint"`
+	CertFile           string `json:"cert_file"`
+	KeyFile            string `json:"key_file"`
+	CAFile             string `json:"ca_file"`
+	ServerName         string `json:"server_name,omitempty"`
+	Timeout            string `json:"timeout"`
+	FlushInterval      string `json:"flush_interval"`
+	BatchSize          int    `json:"batch_size"`
+	PendingWarn        int    `json:"pending_warn"`
+	AutoRenew          bool   `json:"auto_renew"`
+	RenewalEndpoint    string `json:"renewal_endpoint"`
+	RenewBefore        string `json:"renew_before"`
+	RenewCheckInterval string `json:"renew_check_interval"`
 }
 
 type Config struct {
@@ -132,15 +136,18 @@ func Default() Config {
 			MaxItems:         512,
 		},
 		Transport: Transport{
-			Enabled:       false,
-			Endpoint:      "",
-			CertFile:      "certs/client.crt",
-			KeyFile:       "agent-identity.key",
-			CAFile:        "certs/ca.crt",
-			Timeout:       "15s",
-			FlushInterval: "2s",
-			BatchSize:     100,
-			PendingWarn:   10000,
+			Enabled:            false,
+			Endpoint:           "",
+			CertFile:           "certs/client.crt",
+			KeyFile:            "agent-identity.key",
+			CAFile:             "certs/ca.crt",
+			Timeout:            "15s",
+			FlushInterval:      "2s",
+			BatchSize:          100,
+			PendingWarn:        10000,
+			AutoRenew:          true,
+			RenewBefore:        "168h",
+			RenewCheckInterval: "1h",
 		},
 	}
 }
@@ -225,6 +232,21 @@ func (c *Config) applyDefaults(configPath string) {
 	}
 	if c.Transport.PendingWarn <= 0 {
 		c.Transport.PendingWarn = 10000
+	}
+	if c.Transport.RenewBefore == "" {
+		c.Transport.RenewBefore = "168h"
+	}
+	if c.Transport.RenewCheckInterval == "" {
+		c.Transport.RenewCheckInterval = "1h"
+	}
+	if c.Transport.RenewalEndpoint == "" && c.Transport.Endpoint != "" {
+		if endpoint, err := url.Parse(c.Transport.Endpoint); err == nil && endpoint.Scheme != "" && endpoint.Host != "" {
+			endpoint.Path = "/v1/agent/certificate/renew"
+			endpoint.RawPath = ""
+			endpoint.RawQuery = ""
+			endpoint.Fragment = ""
+			c.Transport.RenewalEndpoint = endpoint.String()
+		}
 	}
 	for i := range c.Sources {
 		if c.Sources[i].Trust == "" {
@@ -314,9 +336,8 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.TenantID) == "" {
 			return errors.New("tenant_id is required when transport is enabled")
 		}
-		endpoint, err := url.Parse(strings.TrimSpace(c.Transport.Endpoint))
-		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
-			return errors.New("transport.endpoint must be an absolute https URL")
+		if err := validateHTTPSURL(c.Transport.Endpoint, "transport.endpoint"); err != nil {
+			return err
 		}
 		if c.Transport.CertFile == "" || c.Transport.KeyFile == "" || c.Transport.CAFile == "" {
 			return errors.New("transport cert_file, key_file, and ca_file are required")
@@ -340,6 +361,25 @@ func (c Config) Validate() error {
 		}
 		if c.Transport.PendingWarn < 100 || c.Transport.PendingWarn > 1000000 {
 			return errors.New("transport.pending_warn must be between 100 and 1000000")
+		}
+		if c.Transport.AutoRenew {
+			if err := validateHTTPSURL(c.Transport.RenewalEndpoint, "transport.renewal_endpoint"); err != nil {
+				return err
+			}
+			renewBefore, err := time.ParseDuration(c.Transport.RenewBefore)
+			if err != nil {
+				return fmt.Errorf("invalid transport.renew_before: %w", err)
+			}
+			if renewBefore < time.Hour || renewBefore > 90*24*time.Hour {
+				return errors.New("transport.renew_before must be between 1h and 2160h")
+			}
+			checkInterval, err := time.ParseDuration(c.Transport.RenewCheckInterval)
+			if err != nil {
+				return fmt.Errorf("invalid transport.renew_check_interval: %w", err)
+			}
+			if checkInterval < time.Minute || checkInterval > 24*time.Hour {
+				return errors.New("transport.renew_check_interval must be between 1m and 24h")
+			}
 		}
 	}
 	seen := map[string]struct{}{}
@@ -405,6 +445,14 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("native source %s has unsupported kind %q", source.ID, source.Kind)
 		}
+	}
+	return nil
+}
+
+func validateHTTPSURL(value, name string) error {
+	endpoint, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+		return fmt.Errorf("%s must be an absolute https URL", name)
 	}
 	return nil
 }
