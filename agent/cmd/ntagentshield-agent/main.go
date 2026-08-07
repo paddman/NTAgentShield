@@ -16,6 +16,7 @@ import (
 	"github.com/paddman/NTAgentShield/internal/buildinfo"
 	"github.com/paddman/NTAgentShield/internal/config"
 	"github.com/paddman/NTAgentShield/internal/policyupdate"
+	"github.com/paddman/NTAgentShield/internal/responseexec"
 )
 
 func main() {
@@ -45,7 +46,7 @@ func main() {
 	if cfg.Transport.Enabled {
 		timeout, err := time.ParseDuration(cfg.Transport.Timeout)
 		if err != nil {
-			fatal("initialize signed policy transport timeout", err)
+			fatal("initialize secure control transport timeout", err)
 		}
 		policyRunner, err := policyupdate.NewRunner(policyupdate.RunnerOptions{
 			DataDir:           cfg.DataDir,
@@ -66,6 +67,26 @@ func main() {
 		} else if !errors.Is(err, policyupdate.ErrNotConfigured) {
 			fatal("initialize signed policy distribution", err)
 		}
+
+		responseRunner, err := responseexec.NewRunner(responseexec.RunnerOptions{
+			DataDir:           cfg.DataDir,
+			AgentID:           cfg.AgentID,
+			TenantID:          cfg.TenantID,
+			PolicyFile:        cfg.Tools.PolicyFile,
+			AllowedPaths:      cfg.Tools.AllowedPaths,
+			TransportEndpoint: cfg.Transport.Endpoint,
+			CertFile:          cfg.Transport.CertFile,
+			KeyFile:           cfg.Transport.KeyFile,
+			CAFile:            cfg.Transport.CAFile,
+			ServerName:        cfg.Transport.ServerName,
+			Timeout:           timeout,
+			Interval:          5 * time.Second,
+		})
+		if err != nil {
+			fatal("initialize signed response broker", err)
+		}
+		go responseRunner.Run(ctx, logger)
+		logger.Printf("signed response broker enabled; crash-safe replay ledger is active")
 	}
 
 	if err := runtime.Run(ctx); err != nil {

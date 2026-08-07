@@ -18,6 +18,7 @@ from ntshield.llm.client import QwenAnalyst
 from ntshield.models import IngestResult, RawEventEnvelope, SecurityEvent
 from ntshield.normalizer import normalize
 from ntshield.policy_distribution import PolicyBundleStore, read_policy_public_key
+from ntshield.response_api import build_response_router
 from ntshield.settings import Settings
 from ntshield.transport_auth import (
     verify_agent_payload,
@@ -111,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+    app.include_router(build_response_router(settings))
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -121,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "qwen_model": settings.qwen_model,
             "enrollment_enabled": settings.enrollment_enabled,
             "policy_signing_ready": settings.policy_signing_public_key_path.exists(),
+            "response_signing_ready": settings.response_signing_public_key_path.exists(),
         }
 
     @app.post("/v1/enrollment", response_model=EnrollmentResponse)

@@ -44,5 +44,9 @@ class Settings(BaseSettings):
     policy_signing_private_key_path: Path = Path("./data/pki/policy-signing.key")
     policy_signing_public_key_path: Path = Path("./data/pki/policy-signing.pub")
 
+    response_signing_private_key_path: Path = Path("./data/pki/response-signing.key")
+    response_signing_public_key_path: Path = Path("./data/pki/response-signing.pub")
+    response_lease_seconds: int = 120
+
     dashboard_title: str = "NTAgentShield Behavioral Zero-Day Hunting"
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
