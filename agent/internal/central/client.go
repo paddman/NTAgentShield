@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,6 +88,7 @@ type heartbeatRequest struct {
 	ComputerName string    `json:"computerName"`
 	AgentVersion string    `json:"agentVersion"`
 	OSVersion    string    `json:"osVersion"`
+	HostIP       string    `json:"hostIp,omitempty"`
 	TimestampUTC time.Time `json:"timestampUtc"`
 	Status       string    `json:"status"`
 	QueueDepth   int       `json:"localQueueDepth"`
@@ -286,6 +288,7 @@ func (c *Client) Register(ctx context.Context, rotate bool) error {
 		ComputerName:    c.computerName,
 		AgentVersion:    info.Version,
 		OSVersion:       "go/" + info.Version,
+		HostIP:          detectHostIP(),
 		EnrollmentToken: token,
 		RotateAPIKey:    rotate,
 		Platform:        "linux",
@@ -318,6 +321,7 @@ func (c *Client) sendHeartbeat(ctx context.Context, status HeartbeatStatus) erro
 		ComputerName: c.computerName,
 		AgentVersion: buildinfo.Current().Version,
 		OSVersion:    "go/" + buildinfo.Current().Version,
+		HostIP:       detectHostIP(),
 		TimestampUTC: time.Now().UTC(),
 		Status:       state,
 		QueueDepth:   status.QueueDepth,
@@ -326,6 +330,45 @@ func (c *Client) sendHeartbeat(ctx context.Context, status HeartbeatStatus) erro
 		LastError:    status.LastError,
 	}
 	return c.postJSON(ctx, "/api/v1/agents/heartbeat", request, true, nil)
+}
+
+// detectHostIP returns a usable address for the host running the agent.
+// Prefer IPv4 because it is the address operators most commonly use to
+// identify an asset, while still supporting IPv6-only hosts.
+func detectHostIP() string {
+	var ipv6 string
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			var ip net.IP
+			switch value := address.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || !ip.IsGlobalUnicast() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			if ipv4 := ip.To4(); ipv4 != nil {
+				return ipv4.String()
+			}
+			if ipv6 == "" {
+				ipv6 = ip.String()
+			}
+		}
+	}
+	return ipv6
 }
 
 func (c *Client) sendBatch(ctx context.Context, items []queuedEvent) error {
