@@ -26,9 +26,9 @@ func TestInventoryDetectsServiceListenerAndSoftwareDrift(t *testing.T) {
 	engine.Inspect(inventoryEvent(inventory.Snapshot{}))
 
 	current := inventory.Snapshot{
-		Services: []inventory.Service{{Name: "shadow-service", State: "running", StartMode: "automatic"}},
+		Services:  []inventory.Service{{Name: "shadow-service", State: "running", StartMode: "automatic"}},
 		Listeners: []inventory.Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: 6379, PID: 440}},
-		Software: []inventory.Software{{Name: "remote-helper", Version: "2.4"}},
+		Software:  []inventory.Software{{Name: "remote-helper", Version: "2.4"}},
 	}
 	findings := engine.Inspect(inventoryEvent(current))
 
