@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -186,7 +187,7 @@ func createCSR(privateKey ed25519.PrivateKey, agentID, tenantID, hostname string
 	if hostname = strings.TrimSpace(hostname); hostname != "" {
 		template.DNSNames = []string{hostname}
 	}
-	der, err := x509.CreateCertificateRequest(nil, template, privateKey)
+	der, err := x509.CreateCertificateRequest(rand.Reader, template, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("create enrollment CSR: %w", err)
 	}
