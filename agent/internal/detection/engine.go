@@ -33,6 +33,7 @@ func New() *Engine {
 			defenseEvasionRule{},
 			webShellWriteRule{},
 			nativeHighSignalRule{},
+			newInventoryDriftRule(),
 		},
 		auth: newAuthFailureTracker(10, 5*time.Minute),
 	}
