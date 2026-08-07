@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ntshield.engine.hunt import HuntEngine
+from ntshield.enrollment import CertificateAuthority, EnrollmentTokenManager
+from ntshield.enrollment_store import EnrollmentNonceStore
 from ntshield.llm.client import QwenAnalyst
 from ntshield.models import IngestResult, RawEventEnvelope, SecurityEvent
 from ntshield.normalizer import normalize
@@ -25,11 +28,35 @@ class BulkRawEvents(BaseModel):
     events: list[RawEventEnvelope] = Field(min_length=1, max_length=5000)
 
 
+class EnrollmentRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=128)
+    tenant_id: str = Field(min_length=1, max_length=128)
+    hostname: str | None = Field(default=None, max_length=255)
+    csr_pem: str = Field(min_length=32, max_length=32768)
+
+
+class EnrollmentResponse(BaseModel):
+    agent_id: str
+    tenant_id: str
+    certificate_pem: str
+    ca_certificate_pem: str
+    expires_at: datetime
+
+
 class AppState:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.hunt = HuntEngine(settings)
         self.analyst = QwenAnalyst(settings)
+        self.enrollment_tokens: EnrollmentTokenManager | None = None
+        self.enrollment_ca: CertificateAuthority | None = None
+        self.enrollment_nonces: EnrollmentNonceStore | None = None
+        if settings.enrollment_enabled:
+            self.enrollment_tokens = EnrollmentTokenManager(settings.enrollment_signing_secret)
+            self.enrollment_ca = CertificateAuthority(
+                settings.enrollment_ca_cert_path, settings.enrollment_ca_key_path
+            )
+            self.enrollment_nonces = EnrollmentNonceStore(settings.database_path)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -40,6 +67,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         yield
         state.hunt.store.close()
+        if state.enrollment_nonces is not None:
+            state.enrollment_nonces.close()
 
     app = FastAPI(
         title="NTAgentShield",
@@ -63,7 +92,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "rules_loaded": len(state.hunt.rules),
             "qwen_enabled": settings.qwen_enabled,
             "qwen_model": settings.qwen_model,
+            "enrollment_enabled": settings.enrollment_enabled,
         }
+
+    @app.post("/v1/enrollment", response_model=EnrollmentResponse)
+    def enroll_agent(
+        payload: EnrollmentRequest,
+        authorization: str = Header(default=""),
+    ) -> EnrollmentResponse:
+        if (
+            state.enrollment_tokens is None
+            or state.enrollment_ca is None
+            or state.enrollment_nonces is None
+        ):
+            raise HTTPException(status_code=404, detail="Enrollment is disabled")
+        prefix = "Bearer "
+        if not authorization.startswith(prefix):
+            raise HTTPException(status_code=401, detail="Missing enrollment bearer token")
+        token = authorization[len(prefix) :].strip()
+        try:
+            claims = state.enrollment_tokens.verify(token, payload.tenant_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if not state.enrollment_nonces.consume(
+            claims.nonce, claims.tenant_id, claims.expires_at
+        ):
+            raise HTTPException(status_code=409, detail="Enrollment token was already consumed")
+        try:
+            certificate_pem, ca_pem, expires_at = state.enrollment_ca.issue_client_certificate(
+                payload.csr_pem,
+                payload.agent_id,
+                payload.tenant_id,
+                settings.enrollment_client_cert_ttl_hours,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return EnrollmentResponse(
+            agent_id=payload.agent_id,
+            tenant_id=payload.tenant_id,
+            certificate_pem=certificate_pem,
+            ca_certificate_pem=ca_pem,
+            expires_at=expires_at,
+        )
 
     @app.post("/v1/events/normalized", response_model=IngestResult)
     def ingest_normalized(event: SecurityEvent) -> IngestResult:
