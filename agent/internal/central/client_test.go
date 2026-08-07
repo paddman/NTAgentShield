@@ -21,6 +21,7 @@ func TestRegisterHeartbeatAndIngest(t *testing.T) {
 	}
 	apiKeyPath := filepath.Join(t.TempDir(), "central-api.key")
 	var authenticated int
+	var heartbeat heartbeatRequest
 	var ingested ingestBatch
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/agents/register" {
@@ -42,6 +43,10 @@ func TestRegisterHeartbeatAndIngest(t *testing.T) {
 		if r.URL.Path == "/api/v1/ingest" {
 			if err := json.NewDecoder(r.Body).Decode(&ingested); err != nil {
 				t.Fatalf("decode ingest: %v", err)
+			}
+		} else if r.URL.Path == "/api/v1/agents/heartbeat" {
+			if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil {
+				t.Fatalf("decode heartbeat: %v", err)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -67,6 +72,9 @@ func TestRegisterHeartbeatAndIngest(t *testing.T) {
 	}
 	if err := client.sendHeartbeat(context.Background(), HeartbeatStatus{Status: "running"}); err != nil {
 		t.Fatal(err)
+	}
+	if expected := detectHostIP(); expected != "" && heartbeat.HostIP != expected {
+		t.Fatalf("heartbeat host IP was not preserved: got %q, want %q", heartbeat.HostIP, expected)
 	}
 	event := model.Event{
 		AgentID:  "agent_test",
