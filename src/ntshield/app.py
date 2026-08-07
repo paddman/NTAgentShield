@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,8 +17,13 @@ from ntshield.enrollment_store import EnrollmentNonceStore
 from ntshield.llm.client import QwenAnalyst
 from ntshield.models import IngestResult, RawEventEnvelope, SecurityEvent
 from ntshield.normalizer import normalize
+from ntshield.policy_distribution import PolicyBundleStore, read_policy_public_key
 from ntshield.settings import Settings
-from ntshield.transport_auth import verify_agent_payload, verify_renewal_csr_identity
+from ntshield.transport_auth import (
+    verify_agent_payload,
+    verify_agent_request_signature,
+    verify_renewal_csr_identity,
+)
 
 
 class BulkEvents(BaseModel):
@@ -48,6 +53,7 @@ class EnrollmentResponse(BaseModel):
     certificate_pem: str
     ca_certificate_pem: str
     expires_at: datetime
+    policy_signing_public_key_pem: str | None = None
 
 
 class AgentIngestResponse(BaseModel):
@@ -63,6 +69,7 @@ class AppState:
         self.settings = settings
         self.hunt = HuntEngine(settings)
         self.analyst = QwenAnalyst(settings)
+        self.policy_store = PolicyBundleStore(settings.database_path)
         self.enrollment_tokens: EnrollmentTokenManager | None = None
         self.enrollment_ca: CertificateAuthority | None = None
         self.enrollment_nonces: EnrollmentNonceStore | None = None
@@ -74,6 +81,10 @@ class AppState:
             self.enrollment_nonces = EnrollmentNonceStore(settings.database_path)
 
 
+def policy_request_message(agent_id: str, tenant_id: str, timestamp: str) -> bytes:
+    return f"GET\n/v1/agent/policy\n{timestamp}\n{tenant_id}\n{agent_id}".encode()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     state = AppState(settings)
@@ -82,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         yield
         state.hunt.store.close()
+        state.policy_store.close()
         if state.enrollment_nonces is not None:
             state.enrollment_nonces.close()
 
@@ -108,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "qwen_enabled": settings.qwen_enabled,
             "qwen_model": settings.qwen_model,
             "enrollment_enabled": settings.enrollment_enabled,
+            "policy_signing_ready": settings.policy_signing_public_key_path.exists(),
         }
 
     @app.post("/v1/enrollment", response_model=EnrollmentResponse)
@@ -154,6 +167,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             certificate_pem=certificate_pem,
             ca_certificate_pem=ca_pem,
             expires_at=expires_at,
+            policy_signing_public_key_pem=read_policy_public_key(
+                settings.policy_signing_public_key_path
+            ),
         )
 
     @app.post("/v1/agent/certificate/renew", response_model=EnrollmentResponse)
@@ -214,7 +230,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             certificate_pem=certificate_pem,
             ca_certificate_pem=ca_pem,
             expires_at=expires_at,
+            policy_signing_public_key_pem=read_policy_public_key(
+                settings.policy_signing_public_key_path
+            ),
         )
+
+    @app.get("/v1/agent/policy", response_model=None)
+    def get_agent_policy(
+        x_ntshield_agent_id: str = Header(default=""),
+        x_ntshield_tenant_id: str = Header(default=""),
+        x_ntshield_timestamp: str = Header(default=""),
+        x_ntshield_signature: str = Header(default=""),
+    ) -> dict[str, str] | Response:
+        if state.enrollment_nonces is None:
+            raise HTTPException(status_code=404, detail="Agent policy distribution is disabled")
+        agent_id = x_ntshield_agent_id.strip()
+        tenant_id = x_ntshield_tenant_id.strip()
+        timestamp = x_ntshield_timestamp.strip()
+        signature = x_ntshield_signature.strip()
+        if not agent_id or not tenant_id or not timestamp or not signature:
+            raise HTTPException(status_code=401, detail="Missing Agent authentication headers")
+        enrolled = state.enrollment_nonces.get_agent(tenant_id, agent_id)
+        if enrolled is None or not enrolled.active:
+            raise HTTPException(status_code=401, detail="Agent is not actively enrolled")
+        try:
+            request_time = datetime.fromtimestamp(int(timestamp), UTC)
+        except (ValueError, OverflowError) as exc:
+            raise HTTPException(status_code=401, detail="Invalid Agent request timestamp") from exc
+        if abs((datetime.now(UTC) - request_time).total_seconds()) > 300:
+            raise HTTPException(status_code=401, detail="Agent request timestamp is outside allowed window")
+        try:
+            verify_agent_request_signature(
+                enrolled.certificate_pem,
+                policy_request_message(agent_id, tenant_id, timestamp),
+                signature,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        state.enrollment_nonces.mark_seen(tenant_id, agent_id)
+        bundle = state.policy_store.latest_for_agent(tenant_id, agent_id)
+        if bundle is None:
+            return Response(status_code=204)
+        return bundle.as_dict()
 
     @app.post("/v1/agent/events", response_model=AgentIngestResponse)
     async def ingest_agent_event(

@@ -34,11 +34,12 @@ def load_active_agent_certificate(certificate_pem: str) -> x509.Certificate:
     return certificate
 
 
-def verify_agent_payload(certificate_pem: str, payload: bytes, signature_b64: str) -> None:
+def _verify_ed25519_signature(
+    certificate_pem: str, payload: bytes, signature_b64: str, failure_message: str
+) -> None:
     certificate = load_active_agent_certificate(certificate_pem)
     public_key = certificate.public_key()
     assert isinstance(public_key, ed25519.Ed25519PublicKey)
-
     try:
         signature = base64.b64decode(signature_b64, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -46,7 +47,27 @@ def verify_agent_payload(certificate_pem: str, payload: bytes, signature_b64: st
     try:
         public_key.verify(signature, payload)
     except Exception as exc:
-        raise ValueError("Agent telemetry signature verification failed") from exc
+        raise ValueError(failure_message) from exc
+
+
+def verify_agent_payload(certificate_pem: str, payload: bytes, signature_b64: str) -> None:
+    _verify_ed25519_signature(
+        certificate_pem,
+        payload,
+        signature_b64,
+        "Agent telemetry signature verification failed",
+    )
+
+
+def verify_agent_request_signature(
+    certificate_pem: str, payload: bytes, signature_b64: str
+) -> None:
+    _verify_ed25519_signature(
+        certificate_pem,
+        payload,
+        signature_b64,
+        "Agent request signature verification failed",
+    )
 
 
 def verify_renewal_csr_identity(certificate_pem: str, csr_pem: str) -> None:

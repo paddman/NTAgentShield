@@ -3,16 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/paddman/NTAgentShield/internal/agent"
 	"github.com/paddman/NTAgentShield/internal/buildinfo"
 	"github.com/paddman/NTAgentShield/internal/config"
+	"github.com/paddman/NTAgentShield/internal/policyupdate"
 )
 
 func main() {
@@ -38,6 +41,33 @@ func main() {
 	defer runtime.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if cfg.Transport.Enabled {
+		timeout, err := time.ParseDuration(cfg.Transport.Timeout)
+		if err != nil {
+			fatal("initialize signed policy transport timeout", err)
+		}
+		policyRunner, err := policyupdate.NewRunner(policyupdate.RunnerOptions{
+			DataDir:           cfg.DataDir,
+			AgentID:           cfg.AgentID,
+			TenantID:          cfg.TenantID,
+			PolicyFile:        cfg.Tools.PolicyFile,
+			TransportEndpoint: cfg.Transport.Endpoint,
+			CertFile:          cfg.Transport.CertFile,
+			KeyFile:           cfg.Transport.KeyFile,
+			CAFile:            cfg.Transport.CAFile,
+			ServerName:        cfg.Transport.ServerName,
+			Timeout:           timeout,
+			Interval:          5 * time.Minute,
+		})
+		if err == nil {
+			go policyRunner.Run(ctx, logger)
+			logger.Printf("signed policy distribution enabled; rollback state is Agent-signed")
+		} else if !errors.Is(err, policyupdate.ErrNotConfigured) {
+			fatal("initialize signed policy distribution", err)
+		}
+	}
+
 	if err := runtime.Run(ctx); err != nil {
 		fatal("run agent", err)
 	}
