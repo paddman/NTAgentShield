@@ -24,7 +24,10 @@ func TestMapEventPreservesHighValueContexts(t *testing.T) {
 			OS:       "windows",
 			IPs:      []string{"10.0.0.4"},
 		},
-		Actor: model.Actor{User: "svc-web", SessionID: "session-1"},
+		Actor: model.Actor{
+			User:      "svc-web",
+			SessionID: "session-1",
+		},
 		Process: model.ProcessContext{
 			PID:              501,
 			PPID:             500,
@@ -38,10 +41,23 @@ func TestMapEventPreservesHighValueContexts(t *testing.T) {
 			DestinationPort: 443,
 			Protocol:        "tcp",
 		},
-		HTTP: model.HTTPContext{Method: "POST", Path: "/upload", Status: 200, RequestID: "req-1"},
-		File: model.FileContext{Path: `C:\inetpub\wwwroot\shell.aspx`, Operation: "create", SHA256: "def456"},
-		Provenance: model.Provenance{Collector: "sysmon"},
-		Attributes: map[string]interface{}{"safe_key": "safe-value"},
+		HTTP: model.HTTPContext{
+			Method:    "POST",
+			Path:      "/upload",
+			Status:    200,
+			RequestID: "req-1",
+		},
+		File: model.FileContext{
+			Path:      `C:\inetpub\wwwroot\shell.aspx`,
+			Operation: "create",
+			SHA256:    "def456",
+		},
+		Provenance: model.Provenance{
+			Collector: "sysmon",
+		},
+		Attributes: map[string]interface{}{
+			"safe_key": "safe-value",
+		},
 	}
 
 	mapped := MapEvent(event)
