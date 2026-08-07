@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -77,6 +78,19 @@ type Inventory struct {
 	MaxItems         int    `json:"max_items"`
 }
 
+type Transport struct {
+	Enabled       bool   `json:"enabled"`
+	Endpoint      string `json:"endpoint"`
+	CertFile      string `json:"cert_file"`
+	KeyFile       string `json:"key_file"`
+	CAFile        string `json:"ca_file"`
+	ServerName    string `json:"server_name,omitempty"`
+	Timeout       string `json:"timeout"`
+	FlushInterval string `json:"flush_interval"`
+	BatchSize     int    `json:"batch_size"`
+	PendingWarn   int    `json:"pending_warn"`
+}
+
 type Config struct {
 	AgentID       string         `json:"agent_id"`
 	TenantID      string         `json:"tenant_id"`
@@ -89,6 +103,7 @@ type Config struct {
 	Tools         ToolPolicy     `json:"tools"`
 	AI            AI             `json:"ai"`
 	Inventory     Inventory      `json:"inventory"`
+	Transport     Transport      `json:"transport"`
 }
 
 func Default() Config {
@@ -115,6 +130,17 @@ func Default() Config {
 			IncludeListeners: true,
 			IncludeSoftware:  true,
 			MaxItems:         512,
+		},
+		Transport: Transport{
+			Enabled:       false,
+			Endpoint:      "",
+			CertFile:      "certs/client.crt",
+			KeyFile:       "agent-identity.key",
+			CAFile:        "certs/ca.crt",
+			Timeout:       "15s",
+			FlushInterval: "2s",
+			BatchSize:     100,
+			PendingWarn:   10000,
 		},
 	}
 }
@@ -174,6 +200,32 @@ func (c *Config) applyDefaults(configPath string) {
 	if c.Inventory.MaxItems <= 0 {
 		c.Inventory.MaxItems = 512
 	}
+	if c.Transport.CertFile == "" {
+		c.Transport.CertFile = "certs/client.crt"
+	}
+	if c.Transport.KeyFile == "" {
+		c.Transport.KeyFile = "agent-identity.key"
+	}
+	if c.Transport.CAFile == "" {
+		c.Transport.CAFile = "certs/ca.crt"
+	}
+	for _, target := range []*string{&c.Transport.CertFile, &c.Transport.KeyFile, &c.Transport.CAFile} {
+		if !filepath.IsAbs(*target) {
+			*target = filepath.Clean(filepath.Join(c.DataDir, *target))
+		}
+	}
+	if c.Transport.Timeout == "" {
+		c.Transport.Timeout = "15s"
+	}
+	if c.Transport.FlushInterval == "" {
+		c.Transport.FlushInterval = "2s"
+	}
+	if c.Transport.BatchSize <= 0 {
+		c.Transport.BatchSize = 100
+	}
+	if c.Transport.PendingWarn <= 0 {
+		c.Transport.PendingWarn = 10000
+	}
 	for i := range c.Sources {
 		if c.Sources[i].Trust == "" {
 			c.Sources[i].Trust = model.TrustUntrustedTelemetry
@@ -225,7 +277,7 @@ func (c Config) Validate() error {
 		}
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		if ip == nil || !ip.IsLoopback() {
-			return errors.New("api.listen must be a loopback address; remote control plane transport is intentionally not implemented in the foundation")
+			return errors.New("api.listen must be a loopback address; remote access uses the authenticated transport instead")
 		}
 	}
 	if c.AI.Enabled {
@@ -256,6 +308,38 @@ func (c Config) Validate() error {
 		}
 		if c.Inventory.MaxItems < 1 || c.Inventory.MaxItems > 10000 {
 			return errors.New("inventory.max_items must be between 1 and 10000")
+		}
+	}
+	if c.Transport.Enabled {
+		if strings.TrimSpace(c.TenantID) == "" {
+			return errors.New("tenant_id is required when transport is enabled")
+		}
+		endpoint, err := url.Parse(strings.TrimSpace(c.Transport.Endpoint))
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+			return errors.New("transport.endpoint must be an absolute https URL")
+		}
+		if c.Transport.CertFile == "" || c.Transport.KeyFile == "" || c.Transport.CAFile == "" {
+			return errors.New("transport cert_file, key_file, and ca_file are required")
+		}
+		timeout, err := time.ParseDuration(c.Transport.Timeout)
+		if err != nil {
+			return fmt.Errorf("invalid transport.timeout: %w", err)
+		}
+		if timeout < time.Second || timeout > 2*time.Minute {
+			return errors.New("transport.timeout must be between 1s and 2m")
+		}
+		flushInterval, err := time.ParseDuration(c.Transport.FlushInterval)
+		if err != nil {
+			return fmt.Errorf("invalid transport.flush_interval: %w", err)
+		}
+		if flushInterval < 250*time.Millisecond || flushInterval > time.Minute {
+			return errors.New("transport.flush_interval must be between 250ms and 1m")
+		}
+		if c.Transport.BatchSize < 1 || c.Transport.BatchSize > 1000 {
+			return errors.New("transport.batch_size must be between 1 and 1000")
+		}
+		if c.Transport.PendingWarn < 100 || c.Transport.PendingWarn > 1000000 {
+			return errors.New("transport.pending_warn must be between 100 and 1000000")
 		}
 	}
 	seen := map[string]struct{}{}
