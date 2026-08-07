@@ -167,9 +167,9 @@ func Renew(ctx context.Context, options RenewalOptions) (Response, error) {
 		return Response{}, err
 	}
 	requestBody, err := json.Marshal(RenewalRequest{
-		AgentID: options.AgentID,
+		AgentID:  options.AgentID,
 		TenantID: options.TenantID,
-		CSRPEM: string(csrPEM),
+		CSRPEM:   string(csrPEM),
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("encode certificate renewal request: %w", err)
