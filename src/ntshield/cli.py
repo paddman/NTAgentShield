@@ -13,6 +13,11 @@ from ntshield.engine.hunt import HuntEngine
 from ntshield.enrollment import EnrollmentTokenManager, initialize_ca
 from ntshield.enrollment_store import AgentEnrollment, EnrollmentNonceStore
 from ntshield.models import SecurityEvent
+from ntshield.policy_distribution import (
+    PolicyBundleStore,
+    create_signed_policy_bundle,
+    initialize_policy_signing_key,
+)
 from ntshield.settings import Settings
 
 
@@ -100,6 +105,26 @@ def build_parser() -> argparse.ArgumentParser:
     revoke = subparsers.add_parser("revoke-agent", help="Revoke one enrolled Agent identity in the local Control Plane database")
     revoke.add_argument("--tenant", required=True)
     revoke.add_argument("--agent", required=True)
+
+    init_policy = subparsers.add_parser(
+        "init-policy-key", help="Create the independent Ed25519 policy signing trust root"
+    )
+    init_policy.add_argument("--private-key", type=Path)
+    init_policy.add_argument("--public-key", type=Path)
+
+    publish_policy = subparsers.add_parser(
+        "publish-policy", help="Sign and publish a monotonic policy bundle into the local Control Plane database"
+    )
+    publish_policy.add_argument("--tenant", required=True)
+    publish_policy.add_argument("--epoch", required=True, type=int)
+    publish_policy.add_argument("--policy", required=True, type=Path)
+    publish_policy.add_argument(
+        "--agent", action="append", dest="agents", help="target Agent ID; repeat for multiple Agents; default '*'"
+    )
+    publish_policy.add_argument("--ttl-hours", type=int, default=720)
+
+    policies = subparsers.add_parser("policies", help="List published signed policy metadata")
+    policies.add_argument("--tenant", help="optional tenant filter")
     return parser
 
 
@@ -152,6 +177,50 @@ def main() -> int:
             agent = store.get_agent(args.tenant, args.agent)
             assert agent is not None
             print(json.dumps(agent_summary(agent), indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "init-policy-key":
+        private_path = args.private_key or settings.policy_signing_private_key_path
+        public_path = args.public_key or settings.policy_signing_public_key_path
+        initialize_policy_signing_key(private_path, public_path)
+        print(json.dumps({"private_key": str(private_path), "public_key": str(public_path)}))
+        return 0
+    if args.command == "publish-policy":
+        policy = json.loads(args.policy.read_text(encoding="utf-8"))
+        if not isinstance(policy, dict):
+            raise ValueError("policy JSON must be an object")
+        bundle, payload = create_signed_policy_bundle(
+            policy=policy,
+            tenant_id=args.tenant,
+            epoch=args.epoch,
+            private_key_path=settings.policy_signing_private_key_path,
+            agent_ids=args.agents,
+            ttl_hours=args.ttl_hours,
+        )
+        store = PolicyBundleStore(settings.database_path)
+        try:
+            store.publish(bundle, payload)
+        finally:
+            store.close()
+        print(
+            json.dumps(
+                {
+                    "tenant_id": payload["tenant_id"],
+                    "epoch": payload["epoch"],
+                    "version": payload["version"],
+                    "agent_ids": payload["agent_ids"],
+                    "expires_at": payload["expires_at"],
+                    "sha256": bundle.sha256,
+                },
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "policies":
+        store = PolicyBundleStore(settings.database_path)
+        try:
+            print(json.dumps(store.list_metadata(args.tenant), indent=2))
         finally:
             store.close()
         return 0

@@ -62,11 +62,12 @@ type RenewalRequest struct {
 }
 
 type Response struct {
-	AgentID          string    `json:"agent_id"`
-	TenantID         string    `json:"tenant_id"`
-	CertificatePEM   string    `json:"certificate_pem"`
-	CACertificatePEM string    `json:"ca_certificate_pem"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	AgentID                   string    `json:"agent_id"`
+	TenantID                  string    `json:"tenant_id"`
+	CertificatePEM            string    `json:"certificate_pem"`
+	CACertificatePEM          string    `json:"ca_certificate_pem"`
+	ExpiresAt                 time.Time `json:"expires_at"`
+	PolicySigningPublicKeyPEM string    `json:"policy_signing_public_key_pem,omitempty"`
 }
 
 type Bundle struct {
@@ -142,6 +143,12 @@ func Enroll(ctx context.Context, options Options) (Bundle, error) {
 	if err := atomicWrite(caPath, []byte(response.CACertificatePEM), 0o644); err != nil {
 		return Bundle{}, err
 	}
+	if err := persistPolicySigningKey(
+		filepath.Join(options.DataDir, "policy-signing.pub"),
+		response.PolicySigningPublicKeyPEM,
+	); err != nil {
+		return Bundle{}, err
+	}
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	return Bundle{
 		AgentID:     options.AgentID,
@@ -212,6 +219,12 @@ func Renew(ctx context.Context, options RenewalOptions) (Response, error) {
 		return Response{}, err
 	}
 	if err := atomicWrite(options.CAFile, []byte(response.CACertificatePEM), 0o644); err != nil {
+		return Response{}, err
+	}
+	if err := persistPolicySigningKey(
+		filepath.Join(filepath.Dir(options.KeyFile), "policy-signing.pub"),
+		response.PolicySigningPublicKeyPEM,
+	); err != nil {
 		return Response{}, err
 	}
 	return response, nil
@@ -375,6 +388,34 @@ func verifyIssuedCertificate(response Response, privateKey ed25519.PrivateKey, a
 		return fmt.Errorf("verify enrolled client certificate: %w", err)
 	}
 	return nil
+}
+
+func persistPolicySigningKey(path, content string) error {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	block, _ := pem.Decode([]byte(content))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return errors.New("policy signing trust root is not a valid public key")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse policy signing trust root: %w", err)
+	}
+	if _, ok := parsed.(ed25519.PublicKey); !ok {
+		return errors.New("policy signing trust root must use Ed25519")
+	}
+	encoded := append([]byte(content), '\n')
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(bytes.TrimSpace(existing), bytes.TrimSpace(encoded)) {
+			return nil
+		}
+		return errors.New("policy signing trust root changed; explicit trust rotation is required")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read existing policy signing trust root: %w", err)
+	}
+	return atomicWrite(path, encoded, 0o644)
 }
 
 func readResponse(resp *http.Response) ([]byte, error) {

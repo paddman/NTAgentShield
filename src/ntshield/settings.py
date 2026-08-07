@@ -41,5 +41,8 @@ class Settings(BaseSettings):
     enrollment_ca_key_path: Path = Path("./data/pki/enrollment-ca.key")
     enrollment_client_cert_ttl_hours: int = 720
 
+    policy_signing_private_key_path: Path = Path("./data/pki/policy-signing.key")
+    policy_signing_public_key_path: Path = Path("./data/pki/policy-signing.pub")
+
     dashboard_title: str = "NTAgentShield Behavioral Zero-Day Hunting"
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
