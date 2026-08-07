@@ -45,6 +45,8 @@ jobs:
         run: go build ./cmd/ntagentshieldctl
       - name: Build inventory CLI
         run: go build ./cmd/ntagentshield-inventory
+      - name: Build enrollment CLI
+        run: go build ./cmd/ntagentshield-enroll
 
   go-agent-race:
     runs-on: ubuntu-latest

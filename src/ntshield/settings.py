@@ -35,5 +35,11 @@ class Settings(BaseSettings):
     qwen_max_output_tokens: int = 4096
     qwen_temperature: float = 0.2
 
+    enrollment_enabled: bool = False
+    enrollment_signing_secret: str = ""
+    enrollment_ca_cert_path: Path = Path("./data/pki/enrollment-ca.crt")
+    enrollment_ca_key_path: Path = Path("./data/pki/enrollment-ca.key")
+    enrollment_client_cert_ttl_hours: int = 720
+
     dashboard_title: str = "NTAgentShield Behavioral Zero-Day Hunting"
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/paddman/NTAgentShield/internal/api"
+	"github.com/paddman/NTAgentShield/internal/baseline"
 	"github.com/paddman/NTAgentShield/internal/buildinfo"
 	"github.com/paddman/NTAgentShield/internal/collector/filetail"
 	"github.com/paddman/NTAgentShield/internal/collector/native"
@@ -31,6 +32,7 @@ type Runtime struct {
 	tailers            []*filetail.Tailer
 	nativeSources      []native.Source
 	inventoryCollector *inventory.Collector
+	baselineStore      *baseline.Store
 	inventoryInterval  time.Duration
 	logger             *log.Logger
 	startedAt          time.Time
@@ -134,7 +136,22 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 			_ = journal.Close()
 			return nil, fmt.Errorf("initialize inventory: %w", err)
 		}
+		baselineStore, err := baseline.New(cfg.DataDir)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize signed inventory baseline: %w", err)
+		}
+		storedBaseline, exists, err := baselineStore.Load()
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("load signed inventory baseline: %w", err)
+		}
+		if exists {
+			runtime.detector.SeedInventoryBaseline(storedBaseline)
+			logger.Printf("verified persistent signed inventory baseline loaded")
+		}
 		runtime.inventoryCollector = collector
+		runtime.baselineStore = baselineStore
 		runtime.inventoryInterval = interval
 	}
 	return runtime, nil
@@ -142,16 +159,17 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 
 func (r *Runtime) Run(ctx context.Context) error {
 	startup := map[string]interface{}{
-		"agent_id":           r.cfg.AgentID,
-		"tenant_id":          r.cfg.TenantID,
-		"hostname":           r.hostname,
-		"file_sources":       len(r.tailers),
-		"native_sources":     len(r.nativeSources),
-		"inventory_enabled":  r.inventoryCollector != nil,
-		"inventory_interval": r.cfg.Inventory.Interval,
-		"build":              buildinfo.Current(),
-		"ai_enabled":         r.cfg.AI.Enabled,
-		"safety_model":       "untrusted evidence -> deterministic policy gate -> typed tools",
+		"agent_id":                r.cfg.AgentID,
+		"tenant_id":               r.cfg.TenantID,
+		"hostname":                r.hostname,
+		"file_sources":            len(r.tailers),
+		"native_sources":          len(r.nativeSources),
+		"inventory_enabled":       r.inventoryCollector != nil,
+		"signed_baseline_enabled": r.baselineStore != nil,
+		"inventory_interval":      r.cfg.Inventory.Interval,
+		"build":                   buildinfo.Current(),
+		"ai_enabled":              r.cfg.AI.Enabled,
+		"safety_model":            "untrusted evidence -> deterministic policy gate -> typed tools",
 	}
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
@@ -251,9 +269,21 @@ func (r *Runtime) collectInventory(ctx context.Context, force bool) {
 		r.recordCollectorError("native-inventory", err)
 		return
 	}
+	redact.Event(&event)
 	if _, err := r.process(event); err != nil {
 		r.recordCollectorError("native-inventory", err)
 		return
+	}
+	if r.baselineStore != nil {
+		snapshot, err := baseline.SnapshotFromEvent(event)
+		if err != nil {
+			r.recordCollectorError("inventory-baseline", err)
+			return
+		}
+		if err := r.baselineStore.Save(snapshot); err != nil {
+			r.recordCollectorError("inventory-baseline", err)
+			return
+		}
 	}
 	collectedAt := time.Now().UTC()
 	r.lastInventoryNano.Store(collectedAt.UnixNano())
