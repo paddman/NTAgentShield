@@ -18,6 +18,11 @@ from ntshield.policy_distribution import (
     create_signed_policy_bundle,
     initialize_policy_signing_key,
 )
+from ntshield.response_broker import (
+    ResponseAction,
+    ResponseBrokerStore,
+    initialize_response_signing_key,
+)
 from ntshield.settings import Settings
 
 
@@ -74,6 +79,31 @@ def agent_summary(agent: AgentEnrollment) -> dict[str, object]:
     }
 
 
+def response_summary(action: ResponseAction) -> dict[str, object]:
+    return {
+        "action_id": action.action_id,
+        "tenant_id": action.tenant_id,
+        "agent_id": action.agent_id,
+        "incident_id": action.incident_id,
+        "tool": action.tool,
+        "args": action.args,
+        "reason": action.reason,
+        "risk": action.risk,
+        "status": action.status,
+        "requested_by": action.requested_by,
+        "requested_at": action.requested_at.isoformat(),
+        "expires_at": action.expires_at.isoformat(),
+        "approved_by": action.approved_by,
+        "approved_at": action.approved_at.isoformat() if action.approved_at else None,
+        "dispatch_count": action.dispatch_count,
+        "last_dispatched_at": (
+            action.last_dispatched_at.isoformat() if action.last_dispatched_at else None
+        ),
+        "completed_at": action.completed_at.isoformat() if action.completed_at else None,
+        "result": action.result,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ntshield")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -125,6 +155,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     policies = subparsers.add_parser("policies", help="List published signed policy metadata")
     policies.add_argument("--tenant", help="optional tenant filter")
+
+    init_response = subparsers.add_parser(
+        "init-response-key", help="Create the independent Ed25519 response-command signing trust root"
+    )
+    init_response.add_argument("--private-key", type=Path)
+    init_response.add_argument("--public-key", type=Path)
+
+    create_response = subparsers.add_parser(
+        "response-create", help="Create a proposed response action in the local Control Plane database"
+    )
+    create_response.add_argument("--tenant", required=True)
+    create_response.add_argument("--agent", required=True)
+    create_response.add_argument("--tool", required=True)
+    create_response.add_argument("--args", default="{}", help="JSON object with typed tool arguments")
+    create_response.add_argument("--reason", required=True)
+    create_response.add_argument("--by", required=True, help="operator identity proposing the action")
+    create_response.add_argument("--incident")
+    create_response.add_argument("--ttl", type=int, default=300, help="action lifetime in seconds")
+
+    approve_response = subparsers.add_parser(
+        "response-approve", help="Approve one exact proposed response action"
+    )
+    approve_response.add_argument("--id", required=True)
+    approve_response.add_argument("--by", required=True, help="operator identity approving the action")
+
+    responses = subparsers.add_parser("responses", help="List response action audit state")
+    responses.add_argument("--tenant")
+    responses.add_argument("--agent")
     return parser
 
 
@@ -221,6 +279,48 @@ def main() -> int:
         store = PolicyBundleStore(settings.database_path)
         try:
             print(json.dumps(store.list_metadata(args.tenant), indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "init-response-key":
+        private_path = args.private_key or settings.response_signing_private_key_path
+        public_path = args.public_key or settings.response_signing_public_key_path
+        initialize_response_signing_key(private_path, public_path)
+        print(json.dumps({"private_key": str(private_path), "public_key": str(public_path)}))
+        return 0
+    if args.command == "response-create":
+        action_args = json.loads(args.args)
+        if not isinstance(action_args, dict):
+            raise ValueError("--args must decode to a JSON object")
+        store = ResponseBrokerStore(settings.database_path)
+        try:
+            action = store.create_action(
+                tenant_id=args.tenant,
+                agent_id=args.agent,
+                tool=args.tool,
+                args=action_args,
+                reason=args.reason,
+                requested_by=args.by,
+                ttl_seconds=args.ttl,
+                incident_id=args.incident,
+            )
+            print(json.dumps(response_summary(action), indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "response-approve":
+        store = ResponseBrokerStore(settings.database_path)
+        try:
+            action = store.approve(args.id, args.by)
+            print(json.dumps(response_summary(action), indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "responses":
+        store = ResponseBrokerStore(settings.database_path)
+        try:
+            actions = store.list_actions(args.tenant, args.agent)
+            print(json.dumps([response_summary(action) for action in actions], indent=2))
         finally:
             store.close()
         return 0
