@@ -23,7 +23,13 @@ func (ProcessTerminate) Spec() Spec {
 }
 
 func (ProcessTerminate) Execute(_ context.Context, args map[string]interface{}) (interface{}, error) {
-	pid := intArg(args, "pid", 0)
+	if err := rejectUnknownArgs(args, "pid"); err != nil {
+		return nil, err
+	}
+	pid, err := exactPIDArg(args)
+	if err != nil {
+		return nil, err
+	}
 	if pid <= 4 {
 		return nil, errors.New("pid must identify a non-system process greater than 4")
 	}
