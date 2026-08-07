@@ -249,7 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=403,
                 detail="Signed event identity does not match enrolled Agent/Tenant",
             )
-        state.enrollment_nonces.mark_seen(tenant_id, agent_id, event.observed_at)
+        state.enrollment_nonces.mark_seen(tenant_id, agent_id)
         if state.hunt.store.get_event(event.event_id) is not None:
             return AgentIngestResponse(event_id=event.event_id, duplicate=True)
         result = state.hunt.ingest(event)
