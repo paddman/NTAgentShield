@@ -5,11 +5,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ntshield.engine.hunt import HuntEngine
 from ntshield.enrollment import CertificateAuthority, EnrollmentTokenManager
@@ -18,6 +18,7 @@ from ntshield.llm.client import QwenAnalyst
 from ntshield.models import IngestResult, RawEventEnvelope, SecurityEvent
 from ntshield.normalizer import normalize
 from ntshield.settings import Settings
+from ntshield.transport_auth import verify_agent_payload
 
 
 class BulkEvents(BaseModel):
@@ -41,6 +42,14 @@ class EnrollmentResponse(BaseModel):
     certificate_pem: str
     ca_certificate_pem: str
     expires_at: datetime
+
+
+class AgentIngestResponse(BaseModel):
+    event_id: str
+    accepted: bool = True
+    duplicate: bool = False
+    findings: int = 0
+    incidents: int = 0
 
 
 class AppState:
@@ -127,12 +136,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        state.enrollment_nonces.register_agent(
+            payload.agent_id,
+            payload.tenant_id,
+            certificate_pem,
+            expires_at,
+        )
         return EnrollmentResponse(
             agent_id=payload.agent_id,
             tenant_id=payload.tenant_id,
             certificate_pem=certificate_pem,
             ca_certificate_pem=ca_pem,
             expires_at=expires_at,
+        )
+
+    @app.post("/v1/agent/events", response_model=AgentIngestResponse)
+    async def ingest_agent_event(
+        request: Request,
+        x_ntshield_agent_id: str = Header(default=""),
+        x_ntshield_tenant_id: str = Header(default=""),
+        x_ntshield_signature: str = Header(default=""),
+    ) -> AgentIngestResponse:
+        if state.enrollment_nonces is None:
+            raise HTTPException(status_code=404, detail="Agent transport is disabled")
+        agent_id = x_ntshield_agent_id.strip()
+        tenant_id = x_ntshield_tenant_id.strip()
+        if not agent_id or not tenant_id or not x_ntshield_signature.strip():
+            raise HTTPException(status_code=401, detail="Missing Agent authentication headers")
+        enrolled = state.enrollment_nonces.get_agent(tenant_id, agent_id)
+        if enrolled is None or not enrolled.active:
+            raise HTTPException(status_code=401, detail="Agent is not actively enrolled")
+        body = await request.body()
+        if not body or len(body) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Agent event payload is empty or too large")
+        try:
+            verify_agent_payload(enrolled.certificate_pem, body, x_ntshield_signature.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        try:
+            event = SecurityEvent.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="Invalid normalized Agent event") from exc
+        payload_agent_id = str((event.model_extra or {}).get("agent_id", "")).strip()
+        if event.tenant_id != tenant_id or payload_agent_id != agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Signed event identity does not match enrolled Agent/Tenant",
+            )
+        if state.hunt.store.get_event(event.event_id) is not None:
+            return AgentIngestResponse(event_id=event.event_id, duplicate=True)
+        result = state.hunt.ingest(event)
+        return AgentIngestResponse(
+            event_id=result.event_id,
+            findings=len(result.findings),
+            incidents=len(result.incidents),
         )
 
     @app.post("/v1/events/normalized", response_model=IngestResult)
