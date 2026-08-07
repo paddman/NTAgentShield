@@ -37,6 +37,34 @@ func TestLoadResolvesPaths(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesCentralPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"data_dir":"state",
+		"poll_interval":"1s",
+		"api":{"enabled":false},
+		"central":{
+			"enabled":true,
+			"url":"https://central.example",
+			"enrollment_token_file":"/etc/ntagentshield/enrollment.token"
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Central.APIKeyFile != filepath.Join(dir, "state", "central-api.key") {
+		t.Fatalf("unexpected Central API key path: %s", cfg.Central.APIKeyFile)
+	}
+	if cfg.Central.EnrollmentTokenFile != "/etc/ntagentshield/enrollment.token" {
+		t.Fatalf("unexpected enrollment token path: %s", cfg.Central.EnrollmentTokenFile)
+	}
+}
+
 func TestLoadValidatesNativeSources(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

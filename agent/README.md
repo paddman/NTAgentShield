@@ -18,6 +18,7 @@ The Go agent collects local operational and security telemetry, normalizes evide
 - Typed read-only tools (`host.info`, `file.stat`, `file.sha256`, `file.read_lines`) with path allowlists.
 - Policy engine that denies generic shell tools and prevents untrusted telemetry from directly triggering state changes.
 - Loopback-only authenticated local API for health, status, and event ingestion. It exposes no command endpoint.
+- Optional Shield Central bridge that registers this agent, persists the per-agent API key, sends heartbeats, and forwards redacted events/findings to `/api/v1/ingest`.
 - Optional OpenAI-compatible investigator for local Qwen/Ollama/vLLM endpoints. The request contains no tools and all evidence is marked untrusted.
 
 ## Security invariants
@@ -150,6 +151,28 @@ curl -H "Authorization: Bearer ${TOKEN}" \
 ```
 
 Status includes `inventory_enabled`, `inventory_runs`, `last_inventory_at`, and `inventory_interval`.
+
+### Connect to Shield Central
+
+The existing `transport` block is the signed mTLS transport for the repository's Control Plane. Use the separate `central` block when this agent is paired with the Shield Central service:
+
+```json
+{
+  "central": {
+    "enabled": true,
+    "url": "https://yaksaonline.com",
+    "enrollment_token_file": "/etc/ntagentshield/central-enrollment.token",
+    "api_key_file": "central-api.key",
+    "allow_untrusted_server_certificate": false,
+    "heartbeat_interval": "60s",
+    "batch_interval": "10s",
+    "max_batch": 100,
+    "queue_size": 2000
+  }
+}
+```
+
+The enrollment token is read only during registration. Central returns a per-agent API key, which is stored under `data_dir/central-api.key` with mode `0600`. Keep certificate verification enabled for production; the untrusted-certificate flag is only for controlled testing.
 
 ### Verify the evidence chain
 

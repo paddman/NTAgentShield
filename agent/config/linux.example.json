@@ -94,6 +94,17 @@
     "listen": "127.0.0.1:9477",
     "token_file": "agent-api.token"
   },
+  "central": {
+    "enabled": true,
+    "url": "https://yaksaonline.com",
+    "enrollment_token_file": "/etc/ntagentshield/central-enrollment.token",
+    "api_key_file": "central-api.key",
+    "allow_untrusted_server_certificate": false,
+    "heartbeat_interval": "60s",
+    "batch_interval": "10s",
+    "max_batch": 100,
+    "queue_size": 2000
+  },
   "tools": {
     "policy_file": "/etc/ntagentshield/policies/default-policy.json",
     "allowed_paths": [

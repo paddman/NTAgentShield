@@ -53,6 +53,18 @@ type API struct {
 	TokenFile string `json:"token_file"`
 }
 
+type Central struct {
+	Enabled                         bool   `json:"enabled"`
+	URL                             string `json:"url"`
+	EnrollmentTokenFile             string `json:"enrollment_token_file"`
+	APIKeyFile                      string `json:"api_key_file"`
+	AllowUntrustedServerCertificate bool   `json:"allow_untrusted_server_certificate"`
+	HeartbeatInterval               string `json:"heartbeat_interval"`
+	BatchInterval                   string `json:"batch_interval"`
+	MaxBatch                        int    `json:"max_batch"`
+	QueueSize                       int    `json:"queue_size"`
+}
+
 type ToolPolicy struct {
 	PolicyFile   string   `json:"policy_file"`
 	AllowedPaths []string `json:"allowed_paths"`
@@ -108,6 +120,7 @@ type Config struct {
 	AI            AI             `json:"ai"`
 	Inventory     Inventory      `json:"inventory"`
 	Transport     Transport      `json:"transport"`
+	Central       Central        `json:"central"`
 }
 
 func Default() Config {
@@ -148,6 +161,12 @@ func Default() Config {
 			AutoRenew:          true,
 			RenewBefore:        "168h",
 			RenewCheckInterval: "1h",
+		},
+		Central: Central{
+			HeartbeatInterval: "60s",
+			BatchInterval:     "10s",
+			MaxBatch:          100,
+			QueueSize:         2000,
 		},
 	}
 }
@@ -247,6 +266,30 @@ func (c *Config) applyDefaults(configPath string) {
 			endpoint.Fragment = ""
 			c.Transport.RenewalEndpoint = endpoint.String()
 		}
+	}
+	if c.Central.HeartbeatInterval == "" {
+		c.Central.HeartbeatInterval = "60s"
+	}
+	if c.Central.BatchInterval == "" {
+		c.Central.BatchInterval = "10s"
+	}
+	if c.Central.MaxBatch <= 0 {
+		c.Central.MaxBatch = 100
+	}
+	if c.Central.QueueSize <= 0 {
+		c.Central.QueueSize = 2000
+	}
+	if c.Central.APIKeyFile == "" {
+		c.Central.APIKeyFile = "central-api.key"
+	}
+	if c.Central.EnrollmentTokenFile == "" {
+		c.Central.EnrollmentTokenFile = "central-enrollment.token"
+	}
+	if !filepath.IsAbs(c.Central.APIKeyFile) {
+		c.Central.APIKeyFile = filepath.Join(c.DataDir, c.Central.APIKeyFile)
+	}
+	if !filepath.IsAbs(c.Central.EnrollmentTokenFile) {
+		c.Central.EnrollmentTokenFile = filepath.Clean(filepath.Join(base, c.Central.EnrollmentTokenFile))
 	}
 	for i := range c.Sources {
 		if c.Sources[i].Trust == "" {
@@ -380,6 +423,38 @@ func (c Config) Validate() error {
 			if checkInterval < time.Minute || checkInterval > 24*time.Hour {
 				return errors.New("transport.renew_check_interval must be between 1m and 24h")
 			}
+		}
+	}
+	if c.Central.Enabled {
+		parsed, err := url.Parse(strings.TrimSpace(c.Central.URL))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return errors.New("central.url must be an absolute HTTP(S) URL when Central is enabled")
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return errors.New("central.url must use http or https")
+		}
+		heartbeat, err := time.ParseDuration(c.Central.HeartbeatInterval)
+		if err != nil {
+			return fmt.Errorf("invalid central.heartbeat_interval: %w", err)
+		}
+		if heartbeat < 15*time.Second || heartbeat > 24*time.Hour {
+			return errors.New("central.heartbeat_interval must be between 15s and 24h")
+		}
+		batch, err := time.ParseDuration(c.Central.BatchInterval)
+		if err != nil {
+			return fmt.Errorf("invalid central.batch_interval: %w", err)
+		}
+		if batch < time.Second || batch > time.Hour {
+			return errors.New("central.batch_interval must be between 1s and 1h")
+		}
+		if c.Central.MaxBatch < 1 || c.Central.MaxBatch > 5000 {
+			return errors.New("central.max_batch must be between 1 and 5000")
+		}
+		if c.Central.QueueSize < c.Central.MaxBatch || c.Central.QueueSize > 100000 {
+			return errors.New("central.queue_size must be at least max_batch and no more than 100000")
+		}
+		if strings.TrimSpace(c.Central.APIKeyFile) == "" {
+			return errors.New("central.api_key_file is required when Central is enabled")
 		}
 	}
 	seen := map[string]struct{}{}

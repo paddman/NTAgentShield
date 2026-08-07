@@ -14,6 +14,7 @@ import (
 	"github.com/paddman/NTAgentShield/internal/api"
 	"github.com/paddman/NTAgentShield/internal/baseline"
 	"github.com/paddman/NTAgentShield/internal/buildinfo"
+	"github.com/paddman/NTAgentShield/internal/central"
 	"github.com/paddman/NTAgentShield/internal/collector/filetail"
 	"github.com/paddman/NTAgentShield/internal/collector/native"
 	"github.com/paddman/NTAgentShield/internal/config"
@@ -53,6 +54,7 @@ type Runtime struct {
 	lastInventoryNano        atomic.Int64
 	lastTransportSuccessNano atomic.Int64
 	lastCertificateRenewNano atomic.Int64
+	central                  *central.Client
 }
 
 type Status struct {
@@ -230,6 +232,14 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 		runtime.transportSender = sender
 		runtime.transportFlushInterval = flushInterval
 	}
+	if cfg.Central.Enabled {
+		client, err := central.New(cfg.Central, cfg.AgentID, cfg.TenantID, hostname, logger)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize Central transport: %w", err)
+		}
+		runtime.central = client
+	}
 	return runtime, nil
 }
 
@@ -244,6 +254,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		"signed_baseline_enabled": r.baselineStore != nil,
 		"inventory_interval":      r.cfg.Inventory.Interval,
 		"transport_enabled":       r.transportSender != nil,
+		"central_enabled":         r.central != nil,
 		"certificate_auto_renew":  r.cfg.Transport.AutoRenew,
 		"build":                   buildinfo.Current(),
 		"ai_enabled":              r.cfg.AI.Enabled,
@@ -252,7 +263,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
 	}
-	r.logger.Printf("agent started id=%s file_sources=%d native_sources=%d inventory_enabled=%t transport_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), len(r.nativeSources), r.inventoryCollector != nil, r.transportSender != nil, r.cfg.AI.Enabled)
+	r.logger.Printf("agent started id=%s file_sources=%d native_sources=%d inventory_enabled=%t transport_enabled=%t central_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), len(r.nativeSources), r.inventoryCollector != nil, r.transportSender != nil, r.central != nil, r.cfg.AI.Enabled)
 
 	errCh := make(chan error, 1)
 	if r.cfg.API.Enabled {
@@ -266,6 +277,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	if r.transportSender != nil {
 		go r.runTransport(ctx)
+	}
+	if r.central != nil {
+		go func() {
+			if err := r.central.Run(ctx, r.centralStatus); err != nil {
+				r.logger.Printf("Central transport stopped: %v", err)
+			}
+		}()
+		r.logger.Printf("Central transport enabled url=%s", r.cfg.Central.URL)
 	}
 
 	r.collectInventory(ctx, true)
@@ -491,7 +510,24 @@ func (r *Runtime) process(event model.Event) ([]model.Finding, error) {
 			return findings, fmt.Errorf("queue telemetry for Control Plane: %w", err)
 		}
 	}
+	if r.central != nil {
+		r.central.Enqueue(event, findings)
+	}
 	return findings, nil
+}
+
+func (r *Runtime) centralStatus() central.HeartbeatStatus {
+	status := r.Status()
+	return central.HeartbeatStatus{
+		AgentID:      status.AgentID,
+		TenantID:     status.TenantID,
+		ComputerName: status.Hostname,
+		Status:       status.Status,
+		Events:       status.Events,
+		Findings:     status.Findings,
+		Errors:       status.Errors,
+		QueueDepth:   r.central.QueueDepth(),
+	}
 }
 
 func (r *Runtime) Status() Status {
