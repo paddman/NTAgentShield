@@ -29,10 +29,10 @@ type Item struct {
 }
 
 type OutboxStats struct {
-	Pending         int   `json:"pending"`
-	PendingBytes    int64 `json:"pending_bytes"`
-	DeadLetter      int   `json:"dead_letter"`
-	DeadLetterBytes int64 `json:"dead_letter_bytes"`
+	Pending       int   `json:"pending"`
+	PendingBytes  int64 `json:"pending_bytes"`
+	DeadLetter    int   `json:"dead_letter"`
+	DeadLetterBty int64 `json:"dead_letter_bytes"`
 }
 
 func OpenOutbox(dataDir string) (*Outbox, error) {
@@ -186,10 +186,10 @@ func (o *Outbox) Stats() (OutboxStats, error) {
 		return OutboxStats{}, err
 	}
 	return OutboxStats{
-		Pending:         pending,
-		PendingBytes:    pendingBytes,
-		DeadLetter:      dead,
-		DeadLetterBytes: deadBytes,
+		Pending:       pending,
+		PendingBytes:  pendingBytes,
+		DeadLetter:    dead,
+		DeadLetterBty: deadBytes,
 	}, nil
 }
 
