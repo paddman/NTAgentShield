@@ -18,6 +18,7 @@ import (
 	"github.com/paddman/NTAgentShield/internal/collector/native"
 	"github.com/paddman/NTAgentShield/internal/config"
 	"github.com/paddman/NTAgentShield/internal/detection"
+	"github.com/paddman/NTAgentShield/internal/enrollment"
 	"github.com/paddman/NTAgentShield/internal/inventory"
 	"github.com/paddman/NTAgentShield/internal/model"
 	"github.com/paddman/NTAgentShield/internal/redact"
@@ -48,8 +49,10 @@ type Runtime struct {
 	transportSentCount       atomic.Uint64
 	transportDeadLetterCount atomic.Uint64
 	transportErrorCount      atomic.Uint64
+	certificateRenewalCount  atomic.Uint64
 	lastInventoryNano        atomic.Int64
 	lastTransportSuccessNano atomic.Int64
+	lastCertificateRenewNano atomic.Int64
 }
 
 type Status struct {
@@ -80,6 +83,10 @@ type Status struct {
 	TransportErrors          uint64         `json:"transport_errors"`
 	TransportBackpressure    bool           `json:"transport_backpressure"`
 	LastTransportSuccessAt   *time.Time     `json:"last_transport_success_at,omitempty"`
+	CertificateAutoRenew     bool           `json:"certificate_auto_renew"`
+	CertificateExpiresAt     *time.Time     `json:"certificate_expires_at,omitempty"`
+	CertificateRenewals      uint64         `json:"certificate_renewals"`
+	LastCertificateRenewAt   *time.Time     `json:"last_certificate_renew_at,omitempty"`
 	Build                    buildinfo.Info `json:"build"`
 	SafetyModel              string         `json:"safety_model"`
 }
@@ -187,15 +194,33 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 			_ = journal.Close()
 			return nil, fmt.Errorf("initialize telemetry flush interval: %w", err)
 		}
+		renewBefore := time.Duration(0)
+		renewCheckInterval := time.Duration(0)
+		if cfg.Transport.AutoRenew {
+			renewBefore, err = time.ParseDuration(cfg.Transport.RenewBefore)
+			if err != nil {
+				_ = journal.Close()
+				return nil, fmt.Errorf("initialize certificate renew-before interval: %w", err)
+			}
+			renewCheckInterval, err = time.ParseDuration(cfg.Transport.RenewCheckInterval)
+			if err != nil {
+				_ = journal.Close()
+				return nil, fmt.Errorf("initialize certificate renewal check interval: %w", err)
+			}
+		}
 		sender, err := transport.NewSender(outbox, transport.SenderOptions{
-			Endpoint:   cfg.Transport.Endpoint,
-			AgentID:    cfg.AgentID,
-			TenantID:   cfg.TenantID,
-			CertFile:   cfg.Transport.CertFile,
-			KeyFile:    cfg.Transport.KeyFile,
-			CAFile:     cfg.Transport.CAFile,
-			ServerName: cfg.Transport.ServerName,
-			Timeout:    timeout,
+			Endpoint:           cfg.Transport.Endpoint,
+			AgentID:            cfg.AgentID,
+			TenantID:           cfg.TenantID,
+			CertFile:           cfg.Transport.CertFile,
+			KeyFile:            cfg.Transport.KeyFile,
+			CAFile:             cfg.Transport.CAFile,
+			ServerName:         cfg.Transport.ServerName,
+			Timeout:            timeout,
+			AutoRenew:          cfg.Transport.AutoRenew,
+			RenewalEndpoint:    cfg.Transport.RenewalEndpoint,
+			RenewBefore:        renewBefore,
+			RenewCheckInterval: renewCheckInterval,
 		})
 		if err != nil {
 			_ = journal.Close()
@@ -219,6 +244,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		"signed_baseline_enabled": r.baselineStore != nil,
 		"inventory_interval":      r.cfg.Inventory.Interval,
 		"transport_enabled":       r.transportSender != nil,
+		"certificate_auto_renew":  r.cfg.Transport.AutoRenew,
 		"build":                   buildinfo.Current(),
 		"ai_enabled":              r.cfg.AI.Enabled,
 		"safety_model":            "untrusted evidence -> deterministic policy gate -> typed tools",
@@ -282,6 +308,14 @@ func (r *Runtime) runTransport(ctx context.Context) {
 		result, err := r.transportSender.Flush(ctx, r.cfg.Transport.BatchSize)
 		r.transportSentCount.Add(uint64(result.Sent))
 		r.transportDeadLetterCount.Add(uint64(result.DeadLetter))
+		if result.CertificateRenewed {
+			r.certificateRenewalCount.Add(1)
+			r.lastCertificateRenewNano.Store(time.Now().UTC().UnixNano())
+			r.logger.Printf("Agent client certificate renewed expires_at=%v", result.CertificateExpiresAt)
+			_, _ = r.journal.Append("identity.certificate_renewed", map[string]interface{}{
+				"expires_at": result.CertificateExpiresAt,
+			})
+		}
 		if result.Sent > 0 {
 			r.lastTransportSuccessNano.Store(time.Now().UTC().UnixNano())
 		}
@@ -475,6 +509,18 @@ func (r *Runtime) Status() Status {
 		value := time.Unix(0, lastNano).UTC()
 		lastTransportSuccessAt = &value
 	}
+	var lastCertificateRenewAt *time.Time
+	if lastNano := r.lastCertificateRenewNano.Load(); lastNano != 0 {
+		value := time.Unix(0, lastNano).UTC()
+		lastCertificateRenewAt = &value
+	}
+	var certificateExpiresAt *time.Time
+	if r.cfg.Transport.Enabled {
+		if expiry, err := enrollment.CertificateExpiry(r.cfg.Transport.CertFile); err == nil {
+			value := expiry.UTC()
+			certificateExpiresAt = &value
+		}
+	}
 	transportStats := transport.OutboxStats{}
 	if r.transportOutbox != nil {
 		if stats, err := r.transportOutbox.Stats(); err == nil {
@@ -509,6 +555,10 @@ func (r *Runtime) Status() Status {
 		TransportErrors:          r.transportErrorCount.Load(),
 		TransportBackpressure:    r.transportOutbox != nil && transportStats.Pending >= r.cfg.Transport.PendingWarn,
 		LastTransportSuccessAt:   lastTransportSuccessAt,
+		CertificateAutoRenew:     r.cfg.Transport.Enabled && r.cfg.Transport.AutoRenew,
+		CertificateExpiresAt:     certificateExpiresAt,
+		CertificateRenewals:      r.certificateRenewalCount.Load(),
+		LastCertificateRenewAt:   lastCertificateRenewAt,
 		Build:                    buildinfo.Current(),
 		SafetyModel:              "AI may analyze evidence; only typed tools behind deterministic policy may act",
 	}
