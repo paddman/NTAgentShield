@@ -22,49 +22,66 @@ import (
 	"github.com/paddman/NTAgentShield/internal/model"
 	"github.com/paddman/NTAgentShield/internal/redact"
 	"github.com/paddman/NTAgentShield/internal/store"
+	"github.com/paddman/NTAgentShield/internal/transport"
 )
 
 type Runtime struct {
-	cfg                config.Config
-	hostname           string
-	journal            *store.Journal
-	detector           *detection.Engine
-	tailers            []*filetail.Tailer
-	nativeSources      []native.Source
-	inventoryCollector *inventory.Collector
-	baselineStore      *baseline.Store
-	inventoryInterval  time.Duration
-	logger             *log.Logger
-	startedAt          time.Time
-	eventCount         atomic.Uint64
-	findingCount       atomic.Uint64
-	errorCount         atomic.Uint64
-	inventoryCount     atomic.Uint64
-	nativeEventCount   atomic.Uint64
-	lastInventoryNano  atomic.Int64
+	cfg                      config.Config
+	hostname                 string
+	journal                  *store.Journal
+	detector                 *detection.Engine
+	tailers                  []*filetail.Tailer
+	nativeSources            []native.Source
+	inventoryCollector       *inventory.Collector
+	baselineStore            *baseline.Store
+	inventoryInterval        time.Duration
+	transportOutbox          *transport.Outbox
+	transportSender          *transport.Sender
+	transportFlushInterval   time.Duration
+	logger                   *log.Logger
+	startedAt                time.Time
+	eventCount               atomic.Uint64
+	findingCount             atomic.Uint64
+	errorCount               atomic.Uint64
+	inventoryCount           atomic.Uint64
+	nativeEventCount         atomic.Uint64
+	transportSentCount       atomic.Uint64
+	transportDeadLetterCount atomic.Uint64
+	transportErrorCount      atomic.Uint64
+	lastInventoryNano        atomic.Int64
+	lastTransportSuccessNano atomic.Int64
 }
 
 type Status struct {
-	Status            string         `json:"status"`
-	AgentID           string         `json:"agent_id"`
-	TenantID          string         `json:"tenant_id,omitempty"`
-	Hostname          string         `json:"hostname"`
-	StartedAt         time.Time      `json:"started_at"`
-	Uptime            string         `json:"uptime"`
-	Events            uint64         `json:"events"`
-	Findings          uint64         `json:"findings"`
-	Errors            uint64         `json:"errors"`
-	Sources           int            `json:"sources"`
-	FileSources       int            `json:"file_sources"`
-	NativeSources     int            `json:"native_sources"`
-	NativeEvents      uint64         `json:"native_events"`
-	AIEnabled         bool           `json:"ai_enabled"`
-	InventoryEnabled  bool           `json:"inventory_enabled"`
-	InventoryRuns     uint64         `json:"inventory_runs"`
-	LastInventoryAt   *time.Time     `json:"last_inventory_at,omitempty"`
-	InventoryInterval string         `json:"inventory_interval,omitempty"`
-	Build             buildinfo.Info `json:"build"`
-	SafetyModel       string         `json:"safety_model"`
+	Status                   string         `json:"status"`
+	AgentID                  string         `json:"agent_id"`
+	TenantID                 string         `json:"tenant_id,omitempty"`
+	Hostname                 string         `json:"hostname"`
+	StartedAt                time.Time      `json:"started_at"`
+	Uptime                   string         `json:"uptime"`
+	Events                   uint64         `json:"events"`
+	Findings                 uint64         `json:"findings"`
+	Errors                   uint64         `json:"errors"`
+	Sources                  int            `json:"sources"`
+	FileSources              int            `json:"file_sources"`
+	NativeSources            int            `json:"native_sources"`
+	NativeEvents             uint64         `json:"native_events"`
+	AIEnabled                bool           `json:"ai_enabled"`
+	InventoryEnabled         bool           `json:"inventory_enabled"`
+	InventoryRuns            uint64         `json:"inventory_runs"`
+	LastInventoryAt          *time.Time     `json:"last_inventory_at,omitempty"`
+	InventoryInterval        string         `json:"inventory_interval,omitempty"`
+	TransportEnabled         bool           `json:"transport_enabled"`
+	TransportPending         int            `json:"transport_pending"`
+	TransportPendingBytes    int64          `json:"transport_pending_bytes"`
+	TransportDeadLetter      int            `json:"transport_dead_letter"`
+	TransportDeadLetterBytes int64          `json:"transport_dead_letter_bytes"`
+	TransportSent            uint64         `json:"transport_sent"`
+	TransportErrors          uint64         `json:"transport_errors"`
+	TransportBackpressure    bool           `json:"transport_backpressure"`
+	LastTransportSuccessAt   *time.Time     `json:"last_transport_success_at,omitempty"`
+	Build                    buildinfo.Info `json:"build"`
+	SafetyModel              string         `json:"safety_model"`
 }
 
 func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
@@ -154,6 +171,40 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 		runtime.baselineStore = baselineStore
 		runtime.inventoryInterval = interval
 	}
+	if cfg.Transport.Enabled {
+		outbox, err := transport.OpenOutbox(cfg.DataDir)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize telemetry outbox: %w", err)
+		}
+		timeout, err := time.ParseDuration(cfg.Transport.Timeout)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize telemetry timeout: %w", err)
+		}
+		flushInterval, err := time.ParseDuration(cfg.Transport.FlushInterval)
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize telemetry flush interval: %w", err)
+		}
+		sender, err := transport.NewSender(outbox, transport.SenderOptions{
+			Endpoint:   cfg.Transport.Endpoint,
+			AgentID:    cfg.AgentID,
+			TenantID:   cfg.TenantID,
+			CertFile:   cfg.Transport.CertFile,
+			KeyFile:    cfg.Transport.KeyFile,
+			CAFile:     cfg.Transport.CAFile,
+			ServerName: cfg.Transport.ServerName,
+			Timeout:    timeout,
+		})
+		if err != nil {
+			_ = journal.Close()
+			return nil, fmt.Errorf("initialize telemetry sender: %w", err)
+		}
+		runtime.transportOutbox = outbox
+		runtime.transportSender = sender
+		runtime.transportFlushInterval = flushInterval
+	}
 	return runtime, nil
 }
 
@@ -167,6 +218,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		"inventory_enabled":       r.inventoryCollector != nil,
 		"signed_baseline_enabled": r.baselineStore != nil,
 		"inventory_interval":      r.cfg.Inventory.Interval,
+		"transport_enabled":       r.transportSender != nil,
 		"build":                   buildinfo.Current(),
 		"ai_enabled":              r.cfg.AI.Enabled,
 		"safety_model":            "untrusted evidence -> deterministic policy gate -> typed tools",
@@ -174,7 +226,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
 	}
-	r.logger.Printf("agent started id=%s file_sources=%d native_sources=%d inventory_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), len(r.nativeSources), r.inventoryCollector != nil, r.cfg.AI.Enabled)
+	r.logger.Printf("agent started id=%s file_sources=%d native_sources=%d inventory_enabled=%t transport_enabled=%t ai_enabled=%t", r.cfg.AgentID, len(r.tailers), len(r.nativeSources), r.inventoryCollector != nil, r.transportSender != nil, r.cfg.AI.Enabled)
 
 	errCh := make(chan error, 1)
 	if r.cfg.API.Enabled {
@@ -185,6 +237,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 		server := api.New(r.cfg.API.Listen, token, func() interface{} { return r.Status() }, r.Ingest)
 		go func() { errCh <- server.Run(ctx) }()
 		r.logger.Printf("local API listening on %s; command execution is not exposed", r.cfg.API.Listen)
+	}
+	if r.transportSender != nil {
+		go r.runTransport(ctx)
 	}
 
 	r.collectInventory(ctx, true)
@@ -203,6 +258,78 @@ func (r *Runtime) Run(ctx context.Context) error {
 		case <-ticker.C:
 			r.poll(ctx)
 			r.collectInventory(ctx, false)
+		}
+	}
+}
+
+func (r *Runtime) runTransport(ctx context.Context) {
+	delay := time.Duration(0)
+	lastError := ""
+	backpressureLogged := false
+	for {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		} else if ctx.Err() != nil {
+			return
+		}
+
+		result, err := r.transportSender.Flush(ctx, r.cfg.Transport.BatchSize)
+		r.transportSentCount.Add(uint64(result.Sent))
+		r.transportDeadLetterCount.Add(uint64(result.DeadLetter))
+		if result.Sent > 0 {
+			r.lastTransportSuccessNano.Store(time.Now().UTC().UnixNano())
+		}
+		if result.DeadLetter > 0 {
+			_, _ = r.journal.Append("transport.dead_letter", map[string]interface{}{
+				"count": result.DeadLetter,
+			})
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			r.transportErrorCount.Add(1)
+			r.errorCount.Add(1)
+			message := err.Error()
+			if message != lastError {
+				r.logger.Printf("telemetry transport error: %v", err)
+				_, _ = r.journal.Append("transport.error", map[string]string{"error": message})
+				lastError = message
+			}
+			if delay <= 0 {
+				delay = r.transportFlushInterval
+			}
+			delay *= 2
+			if delay > time.Minute {
+				delay = time.Minute
+			}
+		} else {
+			if lastError != "" {
+				r.logger.Printf("telemetry transport recovered")
+				_, _ = r.journal.Append("transport.recovered", map[string]interface{}{"sent": result.Sent})
+				lastError = ""
+			}
+			delay = r.transportFlushInterval
+		}
+
+		if stats, statsErr := r.transportOutbox.Stats(); statsErr == nil {
+			backpressure := stats.Pending >= r.cfg.Transport.PendingWarn
+			if backpressure && !backpressureLogged {
+				r.logger.Printf("telemetry outbox backpressure pending=%d bytes=%d", stats.Pending, stats.PendingBytes)
+				_, _ = r.journal.Append("transport.backpressure", map[string]interface{}{
+					"pending": stats.Pending,
+					"bytes":   stats.PendingBytes,
+				})
+			}
+			if !backpressure && backpressureLogged {
+				_, _ = r.journal.Append("transport.backpressure_cleared", map[string]interface{}{
+					"pending": stats.Pending,
+				})
+			}
+			backpressureLogged = backpressure
 		}
 	}
 }
@@ -325,6 +452,11 @@ func (r *Runtime) process(event model.Event) ([]model.Finding, error) {
 		encoded, _ := json.Marshal(finding)
 		r.logger.Printf("finding %s", encoded)
 	}
+	if r.transportOutbox != nil {
+		if err := r.transportOutbox.Enqueue(event); err != nil {
+			return findings, fmt.Errorf("queue telemetry for Control Plane: %w", err)
+		}
+	}
 	return findings, nil
 }
 
@@ -338,27 +470,47 @@ func (r *Runtime) Status() Status {
 		value := time.Unix(0, lastNano).UTC()
 		lastInventoryAt = &value
 	}
+	var lastTransportSuccessAt *time.Time
+	if lastNano := r.lastTransportSuccessNano.Load(); lastNano != 0 {
+		value := time.Unix(0, lastNano).UTC()
+		lastTransportSuccessAt = &value
+	}
+	transportStats := transport.OutboxStats{}
+	if r.transportOutbox != nil {
+		if stats, err := r.transportOutbox.Stats(); err == nil {
+			transportStats = stats
+		}
+	}
 	return Status{
-		Status:            "running",
-		AgentID:           r.cfg.AgentID,
-		TenantID:          r.cfg.TenantID,
-		Hostname:          r.hostname,
-		StartedAt:         r.startedAt,
-		Uptime:            time.Since(r.startedAt).Round(time.Second).String(),
-		Events:            r.eventCount.Load(),
-		Findings:          r.findingCount.Load(),
-		Errors:            r.errorCount.Load(),
-		Sources:           sourceCount,
-		FileSources:       len(r.tailers),
-		NativeSources:     len(r.nativeSources),
-		NativeEvents:      r.nativeEventCount.Load(),
-		AIEnabled:         r.cfg.AI.Enabled,
-		InventoryEnabled:  r.inventoryCollector != nil,
-		InventoryRuns:     r.inventoryCount.Load(),
-		LastInventoryAt:   lastInventoryAt,
-		InventoryInterval: r.cfg.Inventory.Interval,
-		Build:             buildinfo.Current(),
-		SafetyModel:       "AI may analyze evidence; only typed tools behind deterministic policy may act",
+		Status:                   "running",
+		AgentID:                  r.cfg.AgentID,
+		TenantID:                 r.cfg.TenantID,
+		Hostname:                 r.hostname,
+		StartedAt:                r.startedAt,
+		Uptime:                   time.Since(r.startedAt).Round(time.Second).String(),
+		Events:                   r.eventCount.Load(),
+		Findings:                 r.findingCount.Load(),
+		Errors:                   r.errorCount.Load(),
+		Sources:                  sourceCount,
+		FileSources:              len(r.tailers),
+		NativeSources:            len(r.nativeSources),
+		NativeEvents:             r.nativeEventCount.Load(),
+		AIEnabled:                r.cfg.AI.Enabled,
+		InventoryEnabled:         r.inventoryCollector != nil,
+		InventoryRuns:            r.inventoryCount.Load(),
+		LastInventoryAt:          lastInventoryAt,
+		InventoryInterval:        r.cfg.Inventory.Interval,
+		TransportEnabled:         r.transportSender != nil,
+		TransportPending:         transportStats.Pending,
+		TransportPendingBytes:    transportStats.PendingBytes,
+		TransportDeadLetter:      transportStats.DeadLetter,
+		TransportDeadLetterBytes: transportStats.DeadLetterBty,
+		TransportSent:            r.transportSentCount.Load(),
+		TransportErrors:          r.transportErrorCount.Load(),
+		TransportBackpressure:    r.transportOutbox != nil && transportStats.Pending >= r.cfg.Transport.PendingWarn,
+		LastTransportSuccessAt:   lastTransportSuccessAt,
+		Build:                    buildinfo.Current(),
+		SafetyModel:              "AI may analyze evidence; only typed tools behind deterministic policy may act",
 	}
 }
 
