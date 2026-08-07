@@ -23,7 +23,11 @@
     "timeout": "15s",
     "flush_interval": "2s",
     "batch_size": 100,
-    "pending_warn": 10000
+    "pending_warn": 10000,
+    "auto_renew": true,
+    "renewal_endpoint": "https://control.example:9443/v1/agent/certificate/renew",
+    "renew_before": "168h",
+    "renew_check_interval": "1h"
   },
   "native_sources": [
     {
