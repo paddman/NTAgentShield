@@ -6,9 +6,12 @@ import ssl
 from pathlib import Path
 
 import uvicorn
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 
 from ntshield.engine.hunt import HuntEngine
 from ntshield.enrollment import EnrollmentTokenManager, initialize_ca
+from ntshield.enrollment_store import AgentEnrollment, EnrollmentNonceStore
 from ntshield.models import SecurityEvent
 from ntshield.settings import Settings
 
@@ -50,6 +53,22 @@ def replay(path: Path, settings: Settings) -> int:
         engine.store.close()
 
 
+def agent_summary(agent: AgentEnrollment) -> dict[str, object]:
+    certificate = x509.load_pem_x509_certificate(agent.certificate_pem.encode("utf-8"))
+    return {
+        "tenant_id": agent.tenant_id,
+        "agent_id": agent.agent_id,
+        "status": agent.status,
+        "enrolled_at": agent.enrolled_at.isoformat(),
+        "certificate_updated_at": agent.certificate_updated_at.isoformat(),
+        "certificate_expires_at": agent.expires_at.isoformat(),
+        "certificate_sha256": certificate.fingerprint(hashes.SHA256()).hex(),
+        "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+        "revoked_at": agent.revoked_at.isoformat() if agent.revoked_at else None,
+        "rotation_count": agent.rotation_count,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ntshield")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -74,6 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
     token = subparsers.add_parser("enrollment-token", help="Issue a short-lived signed enrollment token")
     token.add_argument("--tenant", required=True)
     token.add_argument("--ttl", type=int, default=600, help="token lifetime in seconds")
+
+    agents = subparsers.add_parser("agents", help="List enrolled Agent identities from the local Control Plane database")
+    agents.add_argument("--tenant", help="optional tenant filter")
+
+    revoke = subparsers.add_parser("revoke-agent", help="Revoke one enrolled Agent identity in the local Control Plane database")
+    revoke.add_argument("--tenant", required=True)
+    revoke.add_argument("--agent", required=True)
     return parser
 
 
@@ -109,6 +135,25 @@ def main() -> int:
     if args.command == "enrollment-token":
         manager = EnrollmentTokenManager(settings.enrollment_signing_secret)
         print(manager.issue(args.tenant, args.ttl))
+        return 0
+    if args.command == "agents":
+        store = EnrollmentNonceStore(settings.database_path)
+        try:
+            agents = store.list_agents(args.tenant)
+            print(json.dumps([agent_summary(agent) for agent in agents], indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "revoke-agent":
+        store = EnrollmentNonceStore(settings.database_path)
+        try:
+            if not store.revoke_agent(args.tenant, args.agent):
+                raise ValueError("Agent was not found or is already revoked")
+            agent = store.get_agent(args.tenant, args.agent)
+            assert agent is not None
+            print(json.dumps(agent_summary(agent), indent=2))
+        finally:
+            store.close()
         return 0
     return 2
 
