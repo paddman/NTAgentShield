@@ -185,7 +185,6 @@ func (s *Sender) maybeRenewCertificate(ctx context.Context) (bool, time.Time, er
 	if !s.lastRenewalCheck.IsZero() && now.Sub(s.lastRenewalCheck) < s.options.RenewCheckInterval {
 		return false, time.Time{}, nil
 	}
-	s.lastRenewalCheck = now
 
 	expiresAt, err := enrollment.CertificateExpiry(s.options.CertFile)
 	if err != nil {
@@ -196,6 +195,7 @@ func (s *Sender) maybeRenewCertificate(ctx context.Context) (bool, time.Time, er
 		return false, expiresAt, errors.New("client certificate has expired; bootstrap enrollment is required")
 	}
 	if remaining > s.options.RenewBefore {
+		s.lastRenewalCheck = now
 		return false, expiresAt, nil
 	}
 
@@ -210,8 +210,11 @@ func (s *Sender) maybeRenewCertificate(ctx context.Context) (bool, time.Time, er
 		Timeout:    s.options.Timeout,
 	})
 	if err != nil {
+		// Do not consume the renewal-check window on failure. The caller's transport backoff
+		// controls retries so a transient outage cannot postpone renewal until after expiry.
 		return false, expiresAt, fmt.Errorf("renew client certificate: %w", err)
 	}
+	s.lastRenewalCheck = now
 	s.client.CloseIdleConnections()
 	return true, response.ExpiresAt, nil
 }
