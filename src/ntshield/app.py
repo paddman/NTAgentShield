@@ -18,7 +18,7 @@ from ntshield.llm.client import QwenAnalyst
 from ntshield.models import IngestResult, RawEventEnvelope, SecurityEvent
 from ntshield.normalizer import normalize
 from ntshield.settings import Settings
-from ntshield.transport_auth import verify_agent_payload
+from ntshield.transport_auth import verify_agent_payload, verify_renewal_csr_identity
 
 
 class BulkEvents(BaseModel):
@@ -33,6 +33,12 @@ class EnrollmentRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     tenant_id: str = Field(min_length=1, max_length=128)
     hostname: str | None = Field(default=None, max_length=255)
+    csr_pem: str = Field(min_length=32, max_length=32768)
+
+
+class CertificateRenewalRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=128)
+    tenant_id: str = Field(min_length=1, max_length=128)
     csr_pem: str = Field(min_length=32, max_length=32768)
 
 
@@ -150,6 +156,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expires_at=expires_at,
         )
 
+    @app.post("/v1/agent/certificate/renew", response_model=EnrollmentResponse)
+    async def renew_agent_certificate(
+        request: Request,
+        x_ntshield_agent_id: str = Header(default=""),
+        x_ntshield_tenant_id: str = Header(default=""),
+        x_ntshield_signature: str = Header(default=""),
+    ) -> EnrollmentResponse:
+        if state.enrollment_nonces is None or state.enrollment_ca is None:
+            raise HTTPException(status_code=404, detail="Agent certificate renewal is disabled")
+        agent_id = x_ntshield_agent_id.strip()
+        tenant_id = x_ntshield_tenant_id.strip()
+        signature = x_ntshield_signature.strip()
+        if not agent_id or not tenant_id or not signature:
+            raise HTTPException(status_code=401, detail="Missing Agent authentication headers")
+        enrolled = state.enrollment_nonces.get_agent(tenant_id, agent_id)
+        if enrolled is None or not enrolled.active:
+            raise HTTPException(status_code=401, detail="Agent is not actively enrolled")
+        body = await request.body()
+        if not body or len(body) > 64 * 1024:
+            raise HTTPException(status_code=413, detail="Certificate renewal payload is invalid")
+        try:
+            verify_agent_payload(enrolled.certificate_pem, body, signature)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        try:
+            payload = CertificateRenewalRequest.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail="Invalid certificate renewal request") from exc
+        if payload.agent_id != agent_id or payload.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Signed renewal identity does not match enrolled Agent/Tenant",
+            )
+        try:
+            verify_renewal_csr_identity(enrolled.certificate_pem, payload.csr_pem)
+            certificate_pem, ca_pem, expires_at = state.enrollment_ca.issue_client_certificate(
+                payload.csr_pem,
+                agent_id,
+                tenant_id,
+                settings.enrollment_client_cert_ttl_hours,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        rotated = state.enrollment_nonces.rotate_agent_certificate(
+            agent_id,
+            tenant_id,
+            certificate_pem,
+            expires_at,
+        )
+        if rotated is None:
+            raise HTTPException(status_code=409, detail="Agent identity is no longer renewable")
+        state.enrollment_nonces.mark_seen(tenant_id, agent_id)
+        return EnrollmentResponse(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            certificate_pem=certificate_pem,
+            ca_certificate_pem=ca_pem,
+            expires_at=expires_at,
+        )
+
     @app.post("/v1/agent/events", response_model=AgentIngestResponse)
     async def ingest_agent_event(
         request: Request,
@@ -183,6 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=403,
                 detail="Signed event identity does not match enrolled Agent/Tenant",
             )
+        state.enrollment_nonces.mark_seen(tenant_id, agent_id)
         if state.hunt.store.get_event(event.event_id) is not None:
             return AgentIngestResponse(event_id=event.event_id, duplicate=True)
         result = state.hunt.ingest(event)
