@@ -159,17 +159,17 @@ func New(cfg config.Config, logger *log.Logger) (*Runtime, error) {
 
 func (r *Runtime) Run(ctx context.Context) error {
 	startup := map[string]interface{}{
-		"agent_id":                  r.cfg.AgentID,
-		"tenant_id":                 r.cfg.TenantID,
-		"hostname":                  r.hostname,
-		"file_sources":              len(r.tailers),
-		"native_sources":            len(r.nativeSources),
-		"inventory_enabled":         r.inventoryCollector != nil,
-		"signed_baseline_enabled":   r.baselineStore != nil,
-		"inventory_interval":        r.cfg.Inventory.Interval,
-		"build":                     buildinfo.Current(),
-		"ai_enabled":                r.cfg.AI.Enabled,
-		"safety_model":              "untrusted evidence -> deterministic policy gate -> typed tools",
+		"agent_id":                r.cfg.AgentID,
+		"tenant_id":               r.cfg.TenantID,
+		"hostname":                r.hostname,
+		"file_sources":            len(r.tailers),
+		"native_sources":          len(r.nativeSources),
+		"inventory_enabled":       r.inventoryCollector != nil,
+		"signed_baseline_enabled": r.baselineStore != nil,
+		"inventory_interval":      r.cfg.Inventory.Interval,
+		"build":                   buildinfo.Current(),
+		"ai_enabled":              r.cfg.AI.Enabled,
+		"safety_model":            "untrusted evidence -> deterministic policy gate -> typed tools",
 	}
 	if _, err := r.journal.Append("agent.start", startup); err != nil {
 		return err
