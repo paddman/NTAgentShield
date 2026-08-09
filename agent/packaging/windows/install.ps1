@@ -17,6 +17,7 @@ $InventorySource = Join-Path $PackageDir "ntagentshield-inventory-windows-amd64.
 $EnrollSource = Join-Path $PackageDir "ntagentshield-enroll-windows-amd64.exe"
 $ConfigSource = Join-Path $PackageDir "config\windows.example.json"
 $PolicySource = Join-Path $PackageDir "policies\default-policy.json"
+$AppSource = Join-Path $PackageDir "NTAgentShield.App.exe"
 
 foreach ($required in @($AgentSource, $ConfigSource, $PolicySource)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -51,6 +52,12 @@ if ($oldTask) {
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, (Join-Path $InstallDir "policies") | Out-Null
+$appTarget = Join-Path $InstallDir "NTAgentShield.App.exe"
+$appProcess = Get-Process -Name "NTAgentShield.App" -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $appTarget }
+if ($appProcess) {
+    $appProcess | Stop-Process -Force
+    Start-Sleep -Seconds 2
+}
 Copy-Item -LiteralPath $AgentSource -Destination (Join-Path $InstallDir "ntagentshield-agent.exe") -Force
 foreach ($optional in @(
     @{ Source = $CtlSource; Name = "ntagentshieldctl.exe" },
@@ -60,6 +67,19 @@ foreach ($optional in @(
     if (Test-Path -LiteralPath $optional.Source -PathType Leaf) {
         Copy-Item -LiteralPath $optional.Source -Destination (Join-Path $InstallDir $optional.Name) -Force
     }
+}
+if (Test-Path -LiteralPath $AppSource -PathType Leaf) {
+    Copy-Item -LiteralPath $AppSource -Destination $appTarget -Force
+    $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
+    New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+    $shortcutPath = Join-Path $startMenu "NTAgentShield.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $appTarget
+    $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.IconLocation = "$appTarget,0"
+    $shortcut.Description = "NTAgentShield Windows dashboard"
+    $shortcut.Save()
 }
 
 $policyTarget = Join-Path $InstallDir "policies\default-policy.json"
@@ -100,3 +120,4 @@ Write-Host "Task       : $TaskName (SYSTEM, at startup)"
 Write-Host "Binary     : $agentPath"
 Write-Host "Config     : $configTarget"
 Write-Host "Data       : $DataDir"
+if (Test-Path -LiteralPath $appTarget) { Write-Host "App        : $appTarget (Start Menu shortcut created)" }

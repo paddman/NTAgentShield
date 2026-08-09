@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$RepoRoot = (Resolve-Path (Join-Path $Root "..")).Path
 $OutputPath = if ([IO.Path]::IsPathRooted($OutputDir)) {
     [IO.Path]::GetFullPath($OutputDir)
 } else {
@@ -19,6 +20,8 @@ if (-not $Go) {
     if (Test-Path -LiteralPath $candidate) { $Go = $candidate }
 }
 if (-not $Go) { throw "Go 1.23 or later is required. Install Go and retry." }
+$Dotnet = (Get-Command dotnet.exe -ErrorAction SilentlyContinue).Source
+if (-not $Dotnet) { throw ".NET SDK 10 is required to build the Windows app." }
 
 if (-not $Version) { $Version = $env:VERSION }
 if (-not $Version) {
@@ -58,6 +61,11 @@ try {
     if ($null -eq $oldGoOs) { Remove-Item Env:GOOS -ErrorAction SilentlyContinue } else { $env:GOOS = $oldGoOs }
     if ($null -eq $oldGoArch) { Remove-Item Env:GOARCH -ErrorAction SilentlyContinue } else { $env:GOARCH = $oldGoArch }
 }
+
+$appProject = Join-Path $RepoRoot "app\NTAgentShield.App\NTAgentShield.App.csproj"
+$appOutput = Join-Path $Stage "NTAgentShield.App.exe"
+& $Dotnet publish $appProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o $Stage
+if ($LASTEXITCODE -ne 0) { throw "Windows app publish failed" }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "config"), (Join-Path $Stage "policies") | Out-Null
 Copy-Item (Join-Path $Root "config\windows.example.json") (Join-Path $Stage "config\windows.example.json") -Force

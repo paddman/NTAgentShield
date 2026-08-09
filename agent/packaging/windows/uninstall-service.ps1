@@ -25,6 +25,10 @@ if ($service) {
 }
 
 if ($RemoveFiles -and (Test-Path -LiteralPath $InstallDir)) {
+    $appPath = Join-Path $InstallDir "NTAgentShield.App.exe"
+    $appProcess = Get-Process -Name "NTAgentShield.App" -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $appPath }
+    if ($appProcess) { $appProcess | Stop-Process -Force }
+    Remove-Item -LiteralPath (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\NTAgentShield.lnk") -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }
 if ($RemoveData -and (Test-Path -LiteralPath $DataDir)) {

@@ -4,6 +4,8 @@ This package installs the Go endpoint agent on Windows amd64.
 
 ## Build
 
+Build requirements: Go 1.23 or later and the .NET 10 SDK.
+
 From the `agent` directory in an elevated or normal PowerShell session:
 
 ```powershell
@@ -23,6 +25,7 @@ Extract the zip, open PowerShell as Administrator, and run:
 The installer:
 
 - installs the binaries under `C:\Program Files\NTAgentShield`;
+- installs the `NTAgentShield.App.exe` Windows dashboard and a Start Menu shortcut;
 - creates the first configuration at `C:\ProgramData\NTAgentShield\agent.json`;
 - preserves an existing configuration and evidence directory during upgrades;
 - runs the agent as `SYSTEM` through the `NTAgentShield` Scheduled Task at startup;
@@ -30,6 +33,8 @@ The installer:
 - restricts the data directory to `SYSTEM` and local Administrators.
 
 The current Go executable is a console process, so the package uses a Scheduled Task rather than registering it directly with the Windows Service Control Manager.
+
+Launch `NTAgentShield.App.exe` from the Start Menu for a local dashboard. The app polls `127.0.0.1:9477`, shows Agent health/events/findings/inventory, and provides start, stop, restart, refresh, and data-folder actions. It requests Administrator elevation because task control is privileged.
 
 To intentionally replace the existing configuration:
 

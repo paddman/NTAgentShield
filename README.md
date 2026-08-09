@@ -185,7 +185,7 @@ go build ./cmd/ntagentshield-agent \
 .\packaging\windows\build-package.ps1 -Version 0.1.0
 ```
 
-แตกไฟล์ zip แล้วเปิด PowerShell แบบ Administrator จากนั้นรัน `install.ps1` ตัวติดตั้งจะเก็บ config/evidence เดิมไว้ และตั้งให้ Agent ทำงานอัตโนมัติผ่าน Scheduled Task ของ `SYSTEM` ดูรายละเอียดที่ [agent/packaging/windows/README.md](agent/packaging/windows/README.md)
+แตกไฟล์ zip แล้วเปิด PowerShell แบบ Administrator จากนั้นรัน `install.ps1` ตัวติดตั้งจะเก็บ config/evidence เดิมไว้ ติดตั้ง Windows dashboard app ใน Start Menu และตั้งให้ Agent ทำงานอัตโนมัติผ่าน Scheduled Task ของ `SYSTEM` ดูรายละเอียดที่ [agent/packaging/windows/README.md](agent/packaging/windows/README.md)
 
 ดู Asset Inventory ของเครื่อง:
 
