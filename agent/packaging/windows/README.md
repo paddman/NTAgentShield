@@ -34,7 +34,7 @@ The installer:
 
 The current Go executable is a console process, so the package uses a Scheduled Task rather than registering it directly with the Windows Service Control Manager.
 
-Launch `NTAgentShield.App.exe` from the Start Menu for a local dashboard. The app polls `127.0.0.1:9477`, shows Agent health/events/findings/inventory, and provides start, stop, restart, refresh, and data-folder actions. It requests Administrator elevation because task control is privileged.
+Launch `NTAgentShield.App.exe` from the Start Menu for a local dashboard. The app polls `127.0.0.1:9477`, shows Agent health/events/findings/inventory, and provides start, stop, restart, refresh, data-folder, and **AI Scan** actions. AI Scan selects the latest journal event associated with a finding and invokes the installed `ntagentshieldctl.exe`; it uses `ai.endpoint`, `ai.model`, and the API-key environment variable from `agent.json`. AI output is advisory and read-only. It requests Administrator elevation because task control and the protected evidence journal are privileged.
 
 To intentionally replace the existing configuration:
 

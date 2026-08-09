@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace NTAgentShield.App;
@@ -11,6 +13,9 @@ public sealed class MainForm : Form
     private const string TaskName = "NTAgentShield";
     private const string DataDirectory = @"C:\ProgramData\NTAgentShield";
     private const string TokenPath = DataDirectory + @"\agent-api.token";
+    private const string JournalPath = DataDirectory + @"\evidence.journal.jsonl";
+    private const string ConfigPath = DataDirectory + @"\agent.json";
+    private const string ControlPath = @"C:\Program Files\NTAgentShield\ntagentshieldctl.exe";
     private const string StatusUrl = "http://127.0.0.1:9477/v1/status";
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
@@ -23,6 +28,7 @@ public sealed class MainForm : Form
     private readonly Label _buildValue;
     private readonly Label _updatedValue;
     private readonly TextBox _details;
+    private string? _aiResult;
 
     public MainForm()
     {
@@ -97,6 +103,7 @@ public sealed class MainForm : Form
         actions.Controls.Add(CreateButton("หยุด Agent", async (_, _) => await ControlTaskAsync("End")));
         actions.Controls.Add(CreateButton("รีสตาร์ต", async (_, _) => await RestartTaskAsync()));
         actions.Controls.Add(CreateButton("เปิดข้อมูล", (_, _) => OpenDataDirectory()));
+        actions.Controls.Add(CreateButton("AI Scan", async (_, _) => await RunAiScanAsync()));
         root.Controls.Add(actions, 0, 2);
 
         var detailPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 35, 54), Padding = new Padding(14) };
@@ -208,15 +215,17 @@ public sealed class MainForm : Form
             _inventoryValue.Text = status.InventoryRuns.ToString("N0");
             _buildValue.Text = status.Build?.Version ?? "dev";
             _updatedValue.Text = DateTime.Now.ToString("HH:mm:ss");
-            _details.Text = $"Status: {status.Status}\r\n" +
-                            $"Events: {status.Events:N0}   Findings: {status.Findings:N0}   Errors: {status.Errors:N0}\r\n" +
-                            $"Inventory runs: {status.InventoryRuns:N0}\r\n" +
-                            $"Host: {status.Hostname}\r\n" +
-                            $"Agent ID: {status.AgentId}\r\n" +
-                            $"Uptime: {status.Uptime}\r\n" +
-                            $"Native sources: {status.NativeSources}\r\n" +
-                            $"Transport: {(status.TransportEnabled ? "enabled" : "local-only")}\r\n" +
-                            $"Last refresh: {_updatedValue.Text}";
+            var details = $"Status: {status.Status}\r\n" +
+                          $"Events: {status.Events:N0}   Findings: {status.Findings:N0}   Errors: {status.Errors:N0}\r\n" +
+                          $"Inventory runs: {status.InventoryRuns:N0}\r\n" +
+                          $"Host: {status.Hostname}\r\n" +
+                          $"Agent ID: {status.AgentId}\r\n" +
+                          $"Uptime: {status.Uptime}\r\n" +
+                          $"Native sources: {status.NativeSources}\r\n" +
+                          $"AI: {(status.AIEnabled ? "enabled" : "disabled")}\r\n" +
+                          $"Transport: {(status.TransportEnabled ? "enabled" : "local-only")}\r\n" +
+                          $"Last refresh: {_updatedValue.Text}";
+            _details.Text = _aiResult is null ? details : details + "\r\n\r\n" + _aiResult;
         }
         catch (Exception error)
         {
@@ -265,6 +274,133 @@ public sealed class MainForm : Form
         await ControlTaskAsync("Run");
     }
 
+    private async Task RunAiScanAsync()
+    {
+        string? temporaryEventPath = null;
+        try
+        {
+            if (!File.Exists(ControlPath))
+            {
+                throw new FileNotFoundException("ไม่พบ ntagentshieldctl.exe", ControlPath);
+            }
+
+            _aiResult = "AI Scan กำลังทำงาน...";
+            _details.Text = _aiResult;
+            await RefreshStatusAsync();
+            var eventJson = await Task.Run(FindLatestFindingEvent);
+            if (eventJson is null)
+            {
+                _aiResult = "AI Scan: ยังไม่พบ event ที่มี finding";
+                return;
+            }
+
+            temporaryEventPath = Path.Combine(Path.GetTempPath(), $"ntagentshield-ai-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(temporaryEventPath, eventJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ControlPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = Path.GetDirectoryName(ControlPath)!
+            };
+            startInfo.ArgumentList.Add("ai-analyze");
+            startInfo.ArgumentList.Add("--config");
+            startInfo.ArgumentList.Add(ConfigPath);
+            startInfo.ArgumentList.Add("--event");
+            startInfo.ArgumentList.Add(temporaryEventPath);
+            startInfo.ArgumentList.Add("--objective");
+            startInfo.ArgumentList.Add("Explain the likely attack chain, confidence, missing evidence, and safe read-only investigation steps.");
+
+            var machineKey = Environment.GetEnvironmentVariable("NTAGENTSHIELD_AI_API_KEY", EnvironmentVariableTarget.Machine);
+            if (!string.IsNullOrWhiteSpace(machineKey))
+            {
+                startInfo.Environment["NTAGENTSHIELD_AI_API_KEY"] = machineKey;
+            }
+
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "AI Scan ล้มเหลว" : error.Trim());
+            }
+
+            using var result = JsonDocument.Parse(output);
+            var content = result.RootElement.TryGetProperty("content", out var contentElement)
+                ? contentElement.GetString()
+                : output.Trim();
+            var model = result.RootElement.TryGetProperty("model", out var modelElement)
+                ? modelElement.GetString()
+                : "configured model";
+            _aiResult = $"AI Scan complete\r\nModel: {model}\r\n\r\n{content}";
+        }
+        catch (Exception error)
+        {
+            _aiResult = $"AI Scan ไม่สำเร็จ: {error.Message}";
+        }
+        finally
+        {
+            if (temporaryEventPath is not null)
+            {
+                try { File.Delete(temporaryEventPath); } catch { }
+            }
+            await RefreshStatusAsync();
+        }
+    }
+
+    private static string? FindLatestFindingEvent()
+    {
+        if (!File.Exists(JournalPath)) return null;
+
+        string? latestEventId = null;
+        string? latestEventJson = null;
+        string? selectedEventJson = null;
+        using var stream = new FileStream(JournalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (!root.TryGetProperty("kind", out var kindElement) ||
+                    !root.TryGetProperty("payload", out var payload))
+                {
+                    continue;
+                }
+
+                var kind = kindElement.GetString();
+                if (kind == "event" && payload.ValueKind == JsonValueKind.Object &&
+                    payload.TryGetProperty("id", out var idElement))
+                {
+                    latestEventId = idElement.GetString();
+                    latestEventJson = payload.GetRawText();
+                }
+                else if (kind == "finding" && latestEventId is not null &&
+                         payload.TryGetProperty("evidence_event_ids", out var evidenceIds) &&
+                         evidenceIds.ValueKind == JsonValueKind.Array &&
+                         evidenceIds.EnumerateArray().Any(item => item.GetString() == latestEventId))
+                {
+                    selectedEventJson = latestEventJson;
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore a partially written journal line and continue scanning.
+            }
+        }
+
+        return selectedEventJson ?? latestEventJson;
+    }
+
     private static async Task RunSchtasksAsync(string arguments)
     {
         using var process = new Process
@@ -305,6 +441,7 @@ public sealed class MainForm : Form
         [JsonPropertyName("findings")] public long Findings { get; set; }
         [JsonPropertyName("errors")] public long Errors { get; set; }
         [JsonPropertyName("native_sources")] public int NativeSources { get; set; }
+        [JsonPropertyName("ai_enabled")] public bool AIEnabled { get; set; }
         [JsonPropertyName("inventory_runs")] public long InventoryRuns { get; set; }
         [JsonPropertyName("transport_enabled")] public bool TransportEnabled { get; set; }
         [JsonPropertyName("build")] public BuildInfo? Build { get; set; }
