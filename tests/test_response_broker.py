@@ -15,6 +15,7 @@ from ntshield.response_broker import (
     create_signed_response_lease,
     initialize_response_signing_key,
 )
+from ntshield.mcp_server import build_firewall_port_args, propose_firewall_port
 
 
 def test_response_action_requires_explicit_approval_before_dispatch(tmp_path) -> None:
@@ -132,3 +133,46 @@ def test_response_broker_rejects_unapproved_or_unknown_tool(tmp_path) -> None:
             )
     finally:
         store.close()
+
+
+def test_mcp_firewall_port_creates_typed_proposal_without_approval(tmp_path) -> None:
+    store = ResponseBrokerStore(tmp_path / "ntshield.db")
+    try:
+        summary = propose_firewall_port(
+            store,
+            tenant_id="tenant-a",
+            agent_id="agent-a",
+            operation="open",
+            protocol="tcp",
+            direction="inbound",
+            port=8443,
+            reason="เปิด HTTPS ชั่วคราวสำหรับ incident inc-9",
+            requested_by="central-workflow",
+            incident_id="inc-9",
+        )
+        assert summary["tool"] == "firewall.port"
+        assert summary["status"] == "proposed"
+        assert summary["requires_approval"] is True
+        assert summary["args"] == {
+            "operation": "open",
+            "protocol": "TCP",
+            "direction": "inbound",
+            "port": 8443,
+        }
+        assert store.next_for_agent("tenant-a", "agent-a") is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"operation": "delete", "protocol": "TCP", "direction": "inbound", "port": 443},
+        {"operation": "open", "protocol": "ICMP", "direction": "inbound", "port": 443},
+        {"operation": "open", "protocol": "TCP", "direction": "sideways", "port": 443},
+        {"operation": "open", "protocol": "TCP", "direction": "inbound", "port": 65536},
+    ],
+)
+def test_mcp_firewall_port_rejects_unsafe_schema(kwargs) -> None:
+    with pytest.raises(ValueError):
+        build_firewall_port_args(**kwargs)

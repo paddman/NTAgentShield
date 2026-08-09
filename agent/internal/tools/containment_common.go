@@ -137,6 +137,29 @@ type networkContainmentBackend interface {
 	Release(context.Context) (map[string]interface{}, error)
 	Block(context.Context, netip.Addr) (map[string]interface{}, error)
 	Unblock(context.Context, netip.Addr) (map[string]interface{}, error)
+	OpenPort(context.Context, PortRule) (map[string]interface{}, error)
+	ClosePort(context.Context, PortRule) (map[string]interface{}, error)
+}
+
+type PortRule struct {
+	Protocol  string
+	Direction string
+	Port      uint16
+}
+
+func normalizePortRule(protocol, direction string, port int) (PortRule, error) {
+	protocol = strings.ToUpper(strings.TrimSpace(protocol))
+	if protocol != "TCP" && protocol != "UDP" {
+		return PortRule{}, errors.New("protocol must be TCP or UDP")
+	}
+	direction = strings.ToLower(strings.TrimSpace(direction))
+	if direction != "inbound" && direction != "outbound" {
+		return PortRule{}, errors.New("direction must be inbound or outbound")
+	}
+	if port < 1 || port > 65535 {
+		return PortRule{}, errors.New("port must be between 1 and 65535")
+	}
+	return PortRule{Protocol: protocol, Direction: direction, Port: uint16(port)}, nil
 }
 
 type HostIsolate struct{ backend networkContainmentBackend }

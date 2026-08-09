@@ -28,7 +28,7 @@ func Default() Policy {
 		Version:                 "1",
 		DenyTools:               []string{"shell.exec", "powershell.exec", "cmd.exec"},
 		AutoAllowTools:          []string{"host.info", "file.stat", "file.sha256", "file.read_lines"},
-		ApprovalRequiredTools:   []string{"host.isolate", "process.terminate", "file.quarantine", "firewall.block"},
+		ApprovalRequiredTools:   []string{"host.isolate", "process.terminate", "file.quarantine", "firewall.block", "firewall.port"},
 		NeverAllowDestructive:   true,
 		DenyUntrustedStateWrite: true,
 		MaxActionTTLSeconds:     300,

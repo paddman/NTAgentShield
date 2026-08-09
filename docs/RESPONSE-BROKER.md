@@ -45,7 +45,36 @@ Inspect audit state:
 ntshield responses --tenant tenant-a --agent agent-a
 ```
 
-Write-side response operations remain local CLI operations. There is intentionally no unauthenticated or generic remote response-management API.
+Write-side response operations remain authenticated Control Plane operations. There is intentionally no unauthenticated or generic remote response-management API.
+
+## Central MCP
+
+Central can use the optional MCP server for the same audited workflow:
+
+```bash
+pip install -e ".[mcp]"
+ntshield-mcp
+```
+
+ตัวอย่างการผูกกับ MCP host บนเครื่องเดียวกัน:
+
+```json
+{
+  "mcpServers": {
+    "ntagentshield-central": {
+      "command": "ntshield-mcp",
+      "env": {"NTSHIELD_DATABASE_PATH": "C:\\ProgramData\\NTAgentShield\\ntshield.db"}
+    }
+  }
+}
+```
+
+The stdio MCP server exposes `firewall_port_propose`, `approve_response_action`, and
+`get_response_action`. `firewall_port_propose` accepts only `open`/`close`, TCP/UDP,
+inbound/outbound, and one port from 1 through 65535. It creates a `proposed` action;
+it does not approve or execute the action. Central must call the approval tool after
+its operator/condition workflow authorizes the exact proposal. The enrolled Agent
+then verifies the signed lease and local policy before executing it.
 
 ## Delivery and execution
 
@@ -97,7 +126,9 @@ Safety constraints:
 - process names, wildcard matching and shell commands are not accepted.
 - the signed policy must allow the containment action and the signed lease must carry operator approval.
 
-`host.isolate`, `file.quarantine`, and `firewall.block` remain reserved broker action names but are rejected by the Agent until dedicated typed implementations are added. They are not mapped to a shell fallback.
+`host.isolate`, `file.quarantine`, `firewall.block`, and `firewall.port` are typed
+containment actions. `firewall.port` manages only the exact Agent-owned Windows
+Firewall rule recorded in its signed state; it never deletes an arbitrary rule.
 
 ## Result ACK
 
@@ -113,6 +144,6 @@ The exact JSON body is signed with the Agent Ed25519 identity key. The Control P
 
 - response signer rotation is manual
 - response polling currently runs every five seconds when secure transport is enabled
-- current real containment tool is `process.terminate`
-- host isolation, firewall block and file quarantine require separate typed platform implementations
+- current typed containment tools include process termination, host isolation, IP blocking, file quarantine, and Windows port rules
+- Linux currently rejects `firewall.port` as unsupported rather than changing an unowned firewall ruleset
 - remote admin RBAC/audit/approval APIs are not part of this slice

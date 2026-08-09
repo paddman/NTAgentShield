@@ -22,6 +22,7 @@ RESPONSE_TOOL_RISK: dict[str, str] = {
     "host.isolate": "contain",
     "file.quarantine": "contain",
     "firewall.block": "contain",
+    "firewall.port": "contain",
 }
 
 TERMINAL_STATUSES = {"succeeded", "rejected", "failed", "expired"}

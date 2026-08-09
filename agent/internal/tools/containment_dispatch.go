@@ -14,6 +14,8 @@ type HostContainment struct{ backend networkContainmentBackend }
 
 type FirewallContainment struct{ backend networkContainmentBackend }
 
+type FirewallPortContainment struct{ backend networkContainmentBackend }
+
 type FileContainment struct {
 	quarantine *FileQuarantine
 	restore    *FileRestore
@@ -24,6 +26,9 @@ func (HostContainment) Spec() Spec {
 }
 func (FirewallContainment) Spec() Spec {
 	return Spec{Name: "firewall.block", Description: "Block or unblock one exact remote IP through one signed typed containment action", Risk: model.RiskContain}
+}
+func (FirewallPortContainment) Spec() Spec {
+	return Spec{Name: "firewall.port", Description: "Open or close one exact TCP/UDP port through one signed typed containment action", Risk: model.RiskContain}
 }
 func (FileContainment) Spec() Spec {
 	return Spec{Name: "file.quarantine", Description: "Quarantine or restore one allowlisted file through one signed typed containment action", Risk: model.RiskContain}
@@ -70,6 +75,40 @@ func (t FirewallContainment) Execute(ctx context.Context, args map[string]interf
 		return t.backend.Unblock(ctx, address)
 	default:
 		return nil, errors.New("firewall.block operation must be block or unblock")
+	}
+}
+
+func (t FirewallPortContainment) Execute(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	if err := rejectUnknownArgs(args, "operation", "protocol", "direction", "port"); err != nil {
+		return nil, err
+	}
+	operation, err := containmentOperation(args, "open")
+	if err != nil {
+		return nil, err
+	}
+	protocol, err := stringArg(args, "protocol")
+	if err != nil {
+		return nil, err
+	}
+	direction, err := stringArg(args, "direction")
+	if err != nil {
+		return nil, err
+	}
+	port, err := exactPortArg(args)
+	if err != nil {
+		return nil, err
+	}
+	rule, err := normalizePortRule(protocol, direction, port)
+	if err != nil {
+		return nil, err
+	}
+	switch operation {
+	case "open":
+		return t.backend.OpenPort(ctx, rule)
+	case "close":
+		return t.backend.ClosePort(ctx, rule)
+	default:
+		return nil, errors.New("firewall.port operation must be open or close")
 	}
 }
 
