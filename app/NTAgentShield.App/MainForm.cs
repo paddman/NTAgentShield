@@ -138,21 +138,23 @@ public sealed class MainForm : Form
     private Panel CreateMetric(string title, out Label value)
     {
         var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
-        panel.Controls.Add(new Label
+        var titleLabel = new Label
         {
             Text = title,
-            Dock = DockStyle.Top,
-            Height = 28,
+            AutoSize = true,
+            Location = new Point(4, 4),
             ForeColor = Color.FromArgb(170, 184, 204)
-        });
+        };
         value = new Label
         {
             Text = "—",
-            Dock = DockStyle.Fill,
-            AutoEllipsis = true,
+            AutoSize = true,
+            Location = new Point(4, 32),
             Font = new Font("Segoe UI", 16F, FontStyle.Bold),
-            ForeColor = Color.White
+            ForeColor = Color.White,
+            TextAlign = ContentAlignment.MiddleLeft
         };
+        panel.Controls.Add(titleLabel);
         panel.Controls.Add(value);
         return panel;
     }
@@ -206,7 +208,10 @@ public sealed class MainForm : Form
             _inventoryValue.Text = status.InventoryRuns.ToString("N0");
             _buildValue.Text = status.Build?.Version ?? "dev";
             _updatedValue.Text = DateTime.Now.ToString("HH:mm:ss");
-            _details.Text = $"Host: {status.Hostname}\r\n" +
+            _details.Text = $"Status: {status.Status}\r\n" +
+                            $"Events: {status.Events:N0}   Findings: {status.Findings:N0}   Errors: {status.Errors:N0}\r\n" +
+                            $"Inventory runs: {status.InventoryRuns:N0}\r\n" +
+                            $"Host: {status.Hostname}\r\n" +
                             $"Agent ID: {status.AgentId}\r\n" +
                             $"Uptime: {status.Uptime}\r\n" +
                             $"Native sources: {status.NativeSources}\r\n" +
@@ -298,6 +303,7 @@ public sealed class MainForm : Form
         [JsonPropertyName("uptime")] public string? Uptime { get; set; }
         [JsonPropertyName("events")] public long Events { get; set; }
         [JsonPropertyName("findings")] public long Findings { get; set; }
+        [JsonPropertyName("errors")] public long Errors { get; set; }
         [JsonPropertyName("native_sources")] public int NativeSources { get; set; }
         [JsonPropertyName("inventory_runs")] public long InventoryRuns { get; set; }
         [JsonPropertyName("transport_enabled")] public bool TransportEnabled { get; set; }
