@@ -135,6 +135,34 @@ def test_response_broker_rejects_unapproved_or_unknown_tool(tmp_path) -> None:
         store.close()
 
 
+def test_response_broker_rejects_self_approval_and_invalid_firewall_args(tmp_path) -> None:
+    store = ResponseBrokerStore(tmp_path / "ntshield.db")
+    try:
+        with pytest.raises(ValueError, match="firewall.port"):
+            store.create_action(
+                tenant_id="tenant-a",
+                agent_id="agent-a",
+                tool="firewall.port",
+                args={"operation": "open", "protocol": "TCP", "direction": "inbound", "port": 0},
+                reason="unsafe port",
+                requested_by="operator",
+            )
+        action = store.create_action(
+            tenant_id="tenant-a",
+            agent_id="agent-a",
+            tool="firewall.port",
+            args={"operation": "open", "protocol": "tcp", "direction": "inbound", "port": 8443},
+            reason="open approved service port",
+            requested_by="operator",
+        )
+        assert action.args["protocol"] == "TCP"
+        with pytest.raises(ValueError, match="requester"):
+            store.approve(action.action_id, "operator")
+        assert store.approve(action.action_id, "security-approver").status == "approved"
+    finally:
+        store.close()
+
+
 def test_mcp_firewall_port_creates_typed_proposal_without_approval(tmp_path) -> None:
     store = ResponseBrokerStore(tmp_path / "ntshield.db")
     try:

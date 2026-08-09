@@ -76,6 +76,12 @@ it does not approve or execute the action. Central must call the approval tool a
 its operator/condition workflow authorizes the exact proposal. The enrolled Agent
 then verifies the signed lease and local policy before executing it.
 
+Security boundary: this MCP transport is stdio and does not open an HTTP listener.
+Run it only as the trusted Central service account and keep the MCP host behind
+Central authentication/RBAC. `approved_by` is an audit identity, not proof of
+authentication; the Broker also rejects self-approval, and the Agent remains the
+final policy and signature enforcement point.
+
 ## Delivery and execution
 
 The Agent polls `GET /v1/agent/responses` over mTLS and signs the GET request with its persistent Agent identity key. The Control Plane returns a short-lived Ed25519-signed lease only for an approved action scoped to that exact Tenant and Agent.

@@ -28,6 +28,33 @@ RESPONSE_TOOL_RISK: dict[str, str] = {
 TERMINAL_STATUSES = {"succeeded", "rejected", "failed", "expired"}
 
 
+def _normalize_response_args(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(args, dict):
+        raise ValueError("response args must be a JSON object")
+    if tool != "firewall.port":
+        return dict(args)
+    if set(args) != {"operation", "protocol", "direction", "port"}:
+        raise ValueError("firewall.port args must contain only operation, protocol, direction, and port")
+    operation = args["operation"]
+    protocol = args["protocol"]
+    direction = args["direction"]
+    port = args["port"]
+    if not isinstance(operation, str) or operation.strip().lower() not in {"open", "close"}:
+        raise ValueError("firewall.port operation must be open or close")
+    if not isinstance(protocol, str) or protocol.strip().upper() not in {"TCP", "UDP"}:
+        raise ValueError("firewall.port protocol must be TCP or UDP")
+    if not isinstance(direction, str) or direction.strip().lower() not in {"inbound", "outbound"}:
+        raise ValueError("firewall.port direction must be inbound or outbound")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("firewall.port port must be an integer between 1 and 65535")
+    return {
+        "operation": operation.strip().lower(),
+        "protocol": protocol.strip().upper(),
+        "direction": direction.strip().lower(),
+        "port": port,
+    }
+
+
 @dataclass(frozen=True)
 class SignedResponseLease:
     payload_b64: str
@@ -205,12 +232,24 @@ class ResponseBrokerStore:
         tool = tool.strip()
         requested_by = requested_by.strip()
         reason = reason.strip()
+        incident_id = incident_id.strip() if incident_id else None
         if not tenant_id or not agent_id or not requested_by or not reason:
             raise ValueError("tenant_id, agent_id, requested_by, and reason are required")
+        for field, value, limit in (
+            ("tenant_id", tenant_id, 128),
+            ("agent_id", agent_id, 128),
+            ("requested_by", requested_by, 128),
+            ("reason", reason, 4096),
+        ):
+            if len(value) > limit:
+                raise ValueError(f"{field} exceeds {limit} characters")
+        if incident_id and len(incident_id) > 128:
+            raise ValueError("incident_id exceeds 128 characters")
         if tool not in RESPONSE_TOOL_RISK:
             raise ValueError(f"unsupported response tool {tool!r}")
         if ttl_seconds < 30 or ttl_seconds > 900:
             raise ValueError("response ttl_seconds must be between 30 and 900")
+        args = _normalize_response_args(tool, args)
         encoded_args = json.dumps(args, separators=(",", ":"), sort_keys=True)
         if len(encoded_args.encode("utf-8")) > 16 * 1024:
             raise ValueError("response args exceed 16 KiB")
@@ -219,7 +258,7 @@ class ResponseBrokerStore:
             action_id=f"rsp_{uuid4().hex}",
             tenant_id=tenant_id,
             agent_id=agent_id,
-            incident_id=incident_id.strip() if incident_id else None,
+            incident_id=incident_id,
             tool=tool,
             args=args,
             reason=reason,
@@ -259,16 +298,20 @@ class ResponseBrokerStore:
         approved_by = approved_by.strip()
         if not approved_by:
             raise ValueError("approved_by is required")
+        if len(approved_by) > 128:
+            raise ValueError("approved_by exceeds 128 characters")
         now = datetime.now(UTC)
         with self._lock:
             row = self._conn.execute(
-                "SELECT status, expires_at FROM response_actions WHERE action_id = ?",
+                "SELECT status, expires_at, requested_by FROM response_actions WHERE action_id = ?",
                 (action_id,),
             ).fetchone()
             if row is None:
                 raise ValueError("response action not found")
             if row["status"] != "proposed":
                 raise ValueError("only proposed response actions may be approved")
+            if row["requested_by"].casefold() == approved_by.casefold():
+                raise ValueError("response action cannot be approved by its requester")
             if datetime.fromisoformat(row["expires_at"]).astimezone(UTC) <= now:
                 self._conn.execute(
                     "UPDATE response_actions SET status = 'expired', completed_at = ? WHERE action_id = ?",
