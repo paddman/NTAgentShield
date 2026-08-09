@@ -312,7 +312,7 @@ public sealed class MainForm : Form
             startInfo.ArgumentList.Add("--event");
             startInfo.ArgumentList.Add(temporaryEventPath);
             startInfo.ArgumentList.Add("--objective");
-            startInfo.ArgumentList.Add("Explain the likely attack chain, confidence, missing evidence, and safe read-only investigation steps.");
+            startInfo.ArgumentList.Add("วิเคราะห์ event และ finding ที่แนบมาเป็นภาษาไทยแบบเข้าใจง่าย ระบุสรุป ระดับความเสี่ยง หลักฐานจริง สิ่งที่อาจเกิดขึ้น ข้อมูลที่ยังขาด และขั้นตอนตรวจสอบต่อไปแบบอ่านอย่างเดียว ห้ามแต่งข้อมูลที่ไม่มีในหลักฐาน");
 
             var machineKey = Environment.GetEnvironmentVariable("NTAGENTSHIELD_AI_API_KEY", EnvironmentVariableTarget.Machine);
             if (!string.IsNullOrWhiteSpace(machineKey))
