@@ -118,3 +118,35 @@ func TestWindowsFirewallBlockUsesSignedUniqueOwnedRule(t *testing.T) {
 		t.Fatalf("block ownership state should be removed after unblock, err=%v", err)
 	}
 }
+
+func TestWindowsFirewallPortUsesSignedOwnedRule(t *testing.T) {
+	dir := t.TempDir()
+	_, identityPath, err := identity.Ensure(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &windowsFakeRunner{}
+	backend := &windowsNetworkBackend{runner: fake, dataDir: dir, identityKeyFile: identityPath}
+	rule := PortRule{Protocol: "TCP", Direction: "inbound", Port: 8443}
+	if _, err := backend.OpenPort(context.Background(), rule); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadSignedContainmentState(backend.portStatePath(rule), identityPath, "firewall-port-windows")
+	if err != nil {
+		t.Fatalf("signed Windows port state invalid: %v", err)
+	}
+	name, ok := state.Data["rule"].(string)
+	if !ok || !strings.HasPrefix(name, windowsPortRulePrefix(rule)+"-") {
+		t.Fatalf("unexpected owned rule identity: %#v", state.Data["rule"])
+	}
+	joined := strings.Join(fake.calls, "\n")
+	if !strings.Contains(joined, "name="+name+" dir=in action=allow protocol=TCP localport=8443") {
+		t.Fatalf("Windows port open command missing:\n%s", joined)
+	}
+	if _, err := backend.ClosePort(context.Background(), rule); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(backend.portStatePath(rule)); !os.IsNotExist(err) {
+		t.Fatalf("port ownership state should be removed after close, err=%v", err)
+	}
+}

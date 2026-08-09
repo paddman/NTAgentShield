@@ -156,6 +156,14 @@ func (b *linuxNetworkBackend) Unblock(ctx context.Context, address netip.Addr) (
 	return map[string]interface{}{"remote_ip": address.String(), "unblocked": true, "backend": "nftables"}, nil
 }
 
+func (b *linuxNetworkBackend) OpenPort(context.Context, PortRule) (map[string]interface{}, error) {
+	return nil, errors.New("firewall port containment is currently implemented for Windows only")
+}
+
+func (b *linuxNetworkBackend) ClosePort(context.Context, PortRule) (map[string]interface{}, error) {
+	return nil, errors.New("firewall port containment is currently implemented for Windows only")
+}
+
 func (b *linuxNetworkBackend) ensureBlockTable(ctx context.Context, create bool) (bool, error) {
 	state, stateErr := loadSignedContainmentState(b.blockStatePath(), b.identityKeyFile, "firewall-block-linux-nft")
 	stateExists := stateErr == nil

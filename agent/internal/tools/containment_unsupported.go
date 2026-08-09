@@ -26,3 +26,9 @@ func (unsupportedNetworkBackend) Block(context.Context, netip.Addr) (map[string]
 func (unsupportedNetworkBackend) Unblock(context.Context, netip.Addr) (map[string]interface{}, error) {
 	return nil, errors.New("firewall IP containment is only implemented on Windows and Linux")
 }
+func (unsupportedNetworkBackend) OpenPort(context.Context, PortRule) (map[string]interface{}, error) {
+	return nil, errors.New("firewall port containment is only implemented on Windows")
+}
+func (unsupportedNetworkBackend) ClosePort(context.Context, PortRule) (map[string]interface{}, error) {
+	return nil, errors.New("firewall port containment is only implemented on Windows")
+}

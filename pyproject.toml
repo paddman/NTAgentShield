@@ -26,9 +26,13 @@ dev = [
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
 ]
+mcp = [
+  "mcp[cli]>=1.0,<2",
+]
 
 [project.scripts]
 ntshield = "ntshield.cli:main"
+ntshield-mcp = "ntshield.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

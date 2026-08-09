@@ -15,7 +15,8 @@
     "host.isolate",
     "process.terminate",
     "file.quarantine",
-    "firewall.block"
+    "firewall.block",
+    "firewall.port"
   ],
   "never_allow_destructive": true,
   "deny_untrusted_state_write": true,

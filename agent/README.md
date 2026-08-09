@@ -66,7 +66,7 @@ Native Inventory / Log / Event / Code / HTTP ingest
 
 ## Quick start
 
-Requirements: Go 1.23 or later.
+Requirements: Go 1.23 or later. The Windows package also builds the desktop app and requires the .NET 10 SDK.
 
 ```bash
 go test ./...
@@ -74,6 +74,16 @@ go build ./cmd/ntagentshield-agent \
   ./cmd/ntagentshieldctl \
   ./cmd/ntagentshield-inventory
 ```
+
+### Windows package
+
+Build a redistributable Windows amd64 package from PowerShell:
+
+```powershell
+.\packaging\windows\build-package.ps1 -Version 0.1.0
+```
+
+Extract the generated zip and run `install.ps1` as Administrator. The installer preserves the existing configuration and evidence on upgrade, installs a Start Menu dashboard app, then runs the Agent as `SYSTEM` through the `NTAgentShield` Scheduled Task at startup. See [packaging/windows/README.md](packaging/windows/README.md).
 
 ### Inspect local asset inventory
 

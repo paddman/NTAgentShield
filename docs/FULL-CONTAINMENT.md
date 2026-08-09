@@ -13,10 +13,12 @@ There is no generic shell or arbitrary command transport. Response tools reject 
 | `host.isolate` | `release` | restore exported firewall policy | delete dedicated isolation table | reversible |
 | `firewall.block` | `block` | Windows Firewall | nftables | one exact IPv4/IPv6 address, both directions |
 | `firewall.block` | `unblock` | Windows Firewall | nftables | removes only Agent-signed NTAgentShield-owned state |
+| `firewall.port` | `open` | Windows Firewall | rejected | exact TCP/UDP port and direction; Agent-owned rule only |
+| `firewall.port` | `close` | Windows Firewall | rejected | removes only the matching signed Agent-owned rule |
 | `file.quarantine` | `quarantine` | yes | yes | allowlisted regular file only; optional expected SHA-256 |
 | `file.quarantine` | `restore` | yes | yes | signed quarantine manifest; symlink-safe and no-overwrite |
 
-The broker catalog intentionally keeps the original three action names. Reversal is expressed as a signed `operation` argument, so the Control Plane does not need a wider remote command vocabulary. Because arguments are part of the exact action digest, an approval for `isolate` cannot be replayed as `release`, and an approval for one IP/path cannot be reused for another.
+The broker catalog intentionally keeps a narrow set of typed action names. Reversal is expressed as a signed `operation` argument, so the Control Plane does not need a wider remote command vocabulary. Because arguments are part of the exact action digest, an approval for `isolate` cannot be replayed as `release`, and an approval for one IP/path cannot be reused for another.
 
 ## Host isolation
 
@@ -47,6 +49,22 @@ The backup SHA-256 and path are recorded in an Agent-signed containment state. R
 Linux maintains a dedicated `inet ntshield_block` table with IPv4/IPv6 sets plus an Agent-signed ownership marker. If a table named `ntshield_block` already exists without that signed marker, the Agent refuses to adopt or modify it.
 
 Windows creates a unique `NTAgentShield-Block-*` rule identity for each managed IP block and stores the exact rule name and remote IP in an Agent-signed ownership state. Reapplying a block may delete/recreate only the rule named by that verified state. Unblock with no signed ownership state is a no-op and never searches for or deletes a merely similar administrator rule.
+
+### Firewall port containment
+
+`firewall.port` accepts only:
+
+```json
+{"operation":"open","protocol":"TCP","direction":"inbound","port":8443}
+```
+
+Windows creates a unique `NTAgentShield-Port-*` allow rule and records its exact
+protocol, direction, port, and rule name in an Agent-signed state file. Inbound
+rules match `localport`; outbound rules match `remoteport`. `close` deletes only
+that verified Agent-owned rule. A missing state is treated as already closed.
+
+The current Linux backend rejects this tool explicitly; it does not modify an
+existing nftables ruleset through a generic fallback.
 
 ## File quarantine
 

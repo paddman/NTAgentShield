@@ -22,6 +22,7 @@ func NewResponseRegistry(policyPath string, options ContainmentOptions) (*Regist
 	for _, tool := range []Tool{
 		HostContainment{backend: backend},
 		FirewallContainment{backend: backend},
+		FirewallPortContainment{backend: backend},
 		FileContainment{quarantine: quarantine, restore: restore},
 	} {
 		if err := registry.Register(tool); err != nil {

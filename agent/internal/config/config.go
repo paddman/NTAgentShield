@@ -288,7 +288,7 @@ func (c *Config) applyDefaults(configPath string) {
 	if !filepath.IsAbs(c.Central.APIKeyFile) {
 		c.Central.APIKeyFile = filepath.Join(c.DataDir, c.Central.APIKeyFile)
 	}
-	if !filepath.IsAbs(c.Central.EnrollmentTokenFile) {
+	if !isRootedPath(c.Central.EnrollmentTokenFile) {
 		c.Central.EnrollmentTokenFile = filepath.Clean(filepath.Join(base, c.Central.EnrollmentTokenFile))
 	}
 	for i := range c.Sources {
@@ -329,6 +329,12 @@ func (c *Config) applyDefaults(configPath string) {
 			c.Tools.AllowedPaths[i] = filepath.Clean(filepath.Join(base, path))
 		}
 	}
+}
+
+// isRootedPath preserves slash-rooted paths from configurations shared across
+// Unix and Windows. filepath.IsAbs alone treats /etc/... as relative on Windows.
+func isRootedPath(value string) bool {
+	return filepath.IsAbs(value) || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "\\")
 }
 
 func (c Config) Validate() error {

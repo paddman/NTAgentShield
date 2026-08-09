@@ -44,6 +44,11 @@ func (b *windowsNetworkBackend) blockStatePath(address netip.Addr) string {
 	return filepath.Join(b.isolationDir(), "firewall-block-"+hex.EncodeToString(digest[:8])+".json")
 }
 
+func (b *windowsNetworkBackend) portStatePath(rule PortRule) string {
+	digest := sha256.Sum256([]byte(portRuleKey(rule)))
+	return filepath.Join(b.isolationDir(), "firewall-port-"+hex.EncodeToString(digest[:8])+".json")
+}
+
 func (b *windowsNetworkBackend) Isolate(ctx context.Context) (map[string]interface{}, error) {
 	state, stateErr := loadSignedContainmentState(b.isolationStatePath(), b.identityKeyFile, "host-isolation-windows-firewall")
 	stateExists := stateErr == nil
@@ -246,6 +251,135 @@ func (b *windowsNetworkBackend) Unblock(ctx context.Context, address netip.Addr)
 		return nil, err
 	}
 	return map[string]interface{}{"remote_ip": address.String(), "unblocked": true, "backend": "windows-firewall", "rule": name}, nil
+}
+
+func (b *windowsNetworkBackend) OpenPort(ctx context.Context, rule PortRule) (map[string]interface{}, error) {
+	if err := os.MkdirAll(b.isolationDir(), 0o700); err != nil {
+		return nil, err
+	}
+	statePath := b.portStatePath(rule)
+	state, stateErr := loadSignedContainmentState(statePath, b.identityKeyFile, "firewall-port-windows")
+	stateExists := stateErr == nil
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return nil, stateErr
+	}
+
+	var name string
+	createdState := false
+	if stateExists {
+		var err error
+		name, err = validateWindowsPortState(state, rule)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		name, err = newWindowsPortRuleName(rule)
+		if err != nil {
+			return nil, err
+		}
+		stateData := map[string]interface{}{
+			"backend":   "windows-firewall",
+			"protocol":  rule.Protocol,
+			"direction": rule.Direction,
+			"port":      int(rule.Port),
+			"rule":      name,
+		}
+		if err := saveSignedContainmentState(statePath, b.identityKeyFile, "firewall-port-windows", stateData); err != nil {
+			return nil, fmt.Errorf("persist Windows Firewall port ownership intent: %w", err)
+		}
+		createdState = true
+	}
+
+	if err := b.applyPortRule(ctx, name, rule); err != nil {
+		if createdState {
+			_ = os.Remove(statePath)
+		}
+		return nil, err
+	}
+	return map[string]interface{}{
+		"operation": "open",
+		"protocol":  rule.Protocol,
+		"direction": rule.Direction,
+		"port":      int(rule.Port),
+		"opened":    true,
+		"backend":   "windows-firewall",
+		"rule":      name,
+		"reapplied": stateExists,
+	}, nil
+}
+
+func (b *windowsNetworkBackend) ClosePort(ctx context.Context, rule PortRule) (map[string]interface{}, error) {
+	statePath := b.portStatePath(rule)
+	state, err := loadSignedContainmentState(statePath, b.identityKeyFile, "firewall-port-windows")
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]interface{}{"operation": "close", "protocol": rule.Protocol, "direction": rule.Direction, "port": int(rule.Port), "closed": true, "already_closed": true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	name, err := validateWindowsPortState(state, rule)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := b.runner.Run(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+name); err != nil {
+		return nil, fmt.Errorf("delete Windows Firewall port rule: %w", err)
+	}
+	if err := os.Remove(statePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return map[string]interface{}{"operation": "close", "protocol": rule.Protocol, "direction": rule.Direction, "port": int(rule.Port), "closed": true, "backend": "windows-firewall", "rule": name}, nil
+}
+
+func (b *windowsNetworkBackend) applyPortRule(ctx context.Context, name string, rule PortRule) error {
+	_, _ = b.runner.Run(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+name)
+	portKey := "localport="
+	if rule.Direction == "outbound" {
+		portKey = "remoteport="
+	}
+	args := []string{
+		"advfirewall", "firewall", "add", "rule", "name=" + name,
+		"dir=" + map[string]string{"inbound": "in", "outbound": "out"}[rule.Direction],
+		"action=allow", "protocol=" + rule.Protocol, portKey + strconv.Itoa(int(rule.Port)),
+		"profile=any", "enable=yes",
+	}
+	if _, err := b.runner.Run(ctx, "netsh", args...); err != nil {
+		_, _ = b.runner.Run(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+name)
+		return fmt.Errorf("add Windows Firewall port rule: %w", err)
+	}
+	return nil
+}
+
+func portRuleKey(rule PortRule) string {
+	return fmt.Sprintf("%s|%s|%d", rule.Protocol, rule.Direction, rule.Port)
+}
+
+func windowsPortRulePrefix(rule PortRule) string {
+	digest := sha256.Sum256([]byte(portRuleKey(rule)))
+	return "NTAgentShield-Port-" + hex.EncodeToString(digest[:6])
+}
+
+func newWindowsPortRuleName(rule PortRule) (string, error) {
+	random := make([]byte, 4)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("generate Windows Firewall port rule identity: %w", err)
+	}
+	return windowsPortRulePrefix(rule) + "-" + hex.EncodeToString(random), nil
+}
+
+func validateWindowsPortState(state signedContainmentState, rule PortRule) (string, error) {
+	if state.Data["backend"] != "windows-firewall" || state.Data["protocol"] != rule.Protocol || state.Data["direction"] != rule.Direction {
+		return "", errors.New("signed Windows Firewall port ownership state is invalid")
+	}
+	port, ok := state.Data["port"].(float64)
+	if !ok || port != float64(rule.Port) {
+		return "", errors.New("signed Windows Firewall port ownership state is invalid")
+	}
+	name, ok := state.Data["rule"].(string)
+	if !ok || !strings.HasPrefix(name, windowsPortRulePrefix(rule)+"-") {
+		return "", errors.New("signed Windows Firewall port ownership state is invalid")
+	}
+	return name, nil
 }
 
 func windowsBlockRulePrefix(address netip.Addr) string {
