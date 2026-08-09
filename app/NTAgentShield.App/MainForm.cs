@@ -277,6 +277,7 @@ public sealed class MainForm : Form
     private async Task RunAiScanAsync()
     {
         string? temporaryEventPath = null;
+        string? thaiReport = null;
         try
         {
             if (!File.Exists(ControlPath))
@@ -287,15 +288,18 @@ public sealed class MainForm : Form
             _aiResult = "AI Scan กำลังทำงาน...";
             _details.Text = _aiResult;
             await RefreshStatusAsync();
-            var eventJson = await Task.Run(FindLatestFindingEvent);
-            if (eventJson is null)
+            var evidence = await Task.Run(FindLatestEvidence);
+            if (evidence is null)
             {
                 _aiResult = "AI Scan: ยังไม่พบ event ที่มี finding";
                 return;
             }
 
+            thaiReport = BuildThaiReport(evidence);
+            _aiResult = $"รายงานภาษาไทยจากหลักฐานจริง\r\n{thaiReport}\r\n\r\nกำลังขอความเห็นเพิ่มเติมจาก AI...";
+
             temporaryEventPath = Path.Combine(Path.GetTempPath(), $"ntagentshield-ai-{Guid.NewGuid():N}.json");
-            await File.WriteAllTextAsync(temporaryEventPath, eventJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            await File.WriteAllTextAsync(temporaryEventPath, evidence.EventJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             var startInfo = new ProcessStartInfo
             {
@@ -339,11 +343,16 @@ public sealed class MainForm : Form
             var model = result.RootElement.TryGetProperty("model", out var modelElement)
                 ? modelElement.GetString()
                 : "configured model";
-            _aiResult = $"AI Scan complete\r\nModel: {model}\r\n\r\n{content}";
+            var providerNote = HasThaiText(content)
+                ? $"\r\n\r\nความคิดเห็นจาก AI ({model}):\r\n{content}"
+                : $"\r\n\r\nAI เชื่อมต่อสำเร็จ ({model}) แต่ตอบกลับไม่ใช่ภาษาไทย จึงไม่แสดงข้อความดิบเพื่อป้องกันข้อมูลสับสน";
+            _aiResult = $"รายงานภาษาไทยจากหลักฐานจริง\r\n{thaiReport}{providerNote}";
         }
         catch (Exception error)
         {
-            _aiResult = $"AI Scan ไม่สำเร็จ: {error.Message}";
+            _aiResult = thaiReport is null
+                ? $"AI Scan ไม่สำเร็จ: {error.Message}"
+                : $"รายงานภาษาไทยจากหลักฐานจริง\r\n{thaiReport}\r\n\r\nAI ไม่สามารถเชื่อมต่อได้ในรอบนี้: {error.Message}";
         }
         finally
         {
@@ -355,13 +364,13 @@ public sealed class MainForm : Form
         }
     }
 
-    private static string? FindLatestFindingEvent()
+    private static JournalEvidence? FindLatestEvidence()
     {
         if (!File.Exists(JournalPath)) return null;
 
         string? latestEventId = null;
-        string? latestEventJson = null;
-        string? selectedEventJson = null;
+        JournalEvidence? latestEvent = null;
+        JournalEvidence? selectedEvent = null;
         using var stream = new FileStream(JournalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         string? line;
@@ -382,14 +391,31 @@ public sealed class MainForm : Form
                     payload.TryGetProperty("id", out var idElement))
                 {
                     latestEventId = idElement.GetString();
-                    latestEventJson = payload.GetRawText();
+                    latestEvent = new JournalEvidence
+                    {
+                        EventJson = payload.GetRawText(),
+                        EventId = latestEventId,
+                        EventKind = GetString(payload, "kind"),
+                        EventSeverity = GetString(payload, "severity"),
+                        EventMessage = GetString(payload, "message")
+                    };
                 }
                 else if (kind == "finding" && latestEventId is not null &&
                          payload.TryGetProperty("evidence_event_ids", out var evidenceIds) &&
                          evidenceIds.ValueKind == JsonValueKind.Array &&
                          evidenceIds.EnumerateArray().Any(item => item.GetString() == latestEventId))
                 {
-                    selectedEventJson = latestEventJson;
+                    if (latestEvent is not null)
+                    {
+                        var findingEvidence = new JournalEvidence
+                        {
+                            FindingTitle = GetString(payload, "title"),
+                            FindingRule = GetString(payload, "rule_id"),
+                            FindingSeverity = GetString(payload, "severity"),
+                            FindingConfidence = GetNumber(payload, "confidence")
+                        };
+                        selectedEvent = CloneEvidence(latestEvent, findingEvidence);
+                    }
                 }
             }
             catch (JsonException)
@@ -398,7 +424,103 @@ public sealed class MainForm : Form
             }
         }
 
-        return selectedEventJson ?? latestEventJson;
+        return selectedEvent ?? latestEvent;
+    }
+
+    private static JournalEvidence CloneEvidence(JournalEvidence source, JournalEvidence finding)
+    {
+        return new JournalEvidence
+        {
+            EventJson = source.EventJson,
+            EventId = source.EventId,
+            EventKind = source.EventKind,
+            EventSeverity = source.EventSeverity,
+            EventMessage = source.EventMessage,
+            FindingTitle = finding.FindingTitle,
+            FindingRule = finding.FindingRule,
+            FindingSeverity = finding.FindingSeverity,
+            FindingConfidence = finding.FindingConfidence
+        };
+    }
+
+    private static string? GetString(JsonElement value, string property)
+    {
+        return value.TryGetProperty(property, out var item) && item.ValueKind == JsonValueKind.String
+            ? item.GetString()
+            : null;
+    }
+
+    private static int? GetNumber(JsonElement value, string property)
+    {
+        return value.TryGetProperty(property, out var item) && item.TryGetInt32(out var number)
+            ? number
+            : null;
+    }
+
+    private static string BuildThaiReport(JournalEvidence evidence)
+    {
+        var severity = evidence.FindingSeverity ?? evidence.EventSeverity;
+        var risk = severity?.ToLowerInvariant() switch
+        {
+            "critical" => "วิกฤต",
+            "high" => "สูง / ควรตรวจสอบทันที",
+            "medium" => "ปานกลาง / น่าสงสัย",
+            "low" => "ต่ำ",
+            _ => "ข้อมูลสำหรับตรวจสอบ"
+        };
+        var finding = TranslateFinding(evidence.FindingTitle);
+        var eventDescription = TranslateEvent(evidence.EventMessage, evidence.EventKind);
+        var confidence = evidence.FindingConfidence.HasValue ? $"ความมั่นใจของ rule: {evidence.FindingConfidence}%\r\n" : string.Empty;
+
+        return $"สรุป: พบเหตุการณ์ที่ rule ของ Agent ทำเครื่องหมายไว้ ควรตรวจสอบเพิ่มเติม แต่ยังไม่ใช่การยืนยันว่าเครื่องถูกโจมตี\r\n" +
+               $"ระดับความเสี่ยง: {risk}\r\n" +
+               $"สิ่งที่พบ: {finding}\r\n" +
+               $"เหตุการณ์: {eventDescription}\r\n" +
+               $"หลักฐาน: Event ID {evidence.EventId ?? "ไม่พบ"}\r\n" +
+               (string.IsNullOrWhiteSpace(evidence.FindingRule) ? string.Empty : $"Rule: {evidence.FindingRule}\r\n") +
+               confidence +
+               "ข้อมูลที่ยังขาด: process tree, command line เต็ม, ผู้ใช้ที่เกี่ยวข้อง, ไฟล์หรือ hash และ network connection ที่สัมพันธ์กัน\r\n" +
+               "ขั้นตอนต่อไป: ตรวจสอบ Windows Event ที่เกี่ยวข้องและ process tree แบบอ่านอย่างเดียว เก็บหลักฐานก่อนแก้ไขระบบ\r\n" +
+               "ข้อควรระวัง: การหยุด process, block IP, แยกเครื่อง, ปิดบัญชี หรือลบไฟล์ ต้องได้รับอนุมัติจากมนุษย์ก่อน";
+    }
+
+    private static string TranslateEvent(string? message, string? kind)
+    {
+        if (!string.IsNullOrWhiteSpace(message) && message.StartsWith("Windows event ", StringComparison.OrdinalIgnoreCase))
+        {
+            return "พบ Windows event: " + message["Windows event ".Length..];
+        }
+        return string.IsNullOrWhiteSpace(message) ? $"ประเภท {kind ?? "ไม่ระบุ"}" : message;
+    }
+
+    private static string TranslateFinding(string? title)
+    {
+        return title switch
+        {
+            "Encoded or in-memory PowerShell activity" => "พบการใช้ PowerShell แบบเข้ารหัสหรือทำงานในหน่วยความจำ",
+            "New externally reachable listening socket" => "พบพอร์ตใหม่ที่เปิดรับการเชื่อมต่อจากภายนอก",
+            "Prompt injection or control-disable text" => "พบข้อความที่พยายามหลอกหรือสั่งให้ระบบป้องกันหยุดทำงาน",
+            _ when string.IsNullOrWhiteSpace(title) => "พบพฤติกรรมที่ควรตรวจสอบ",
+            _ => title!
+        };
+    }
+
+    private static bool HasThaiText(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value) && value.Any(character => character is >= '\u0E00' and <= '\u0E7F');
+    }
+
+    private sealed class JournalEvidence
+    {
+        public string EventJson { get; set; } = string.Empty;
+        public string? EventId { get; set; }
+        public string? EventKind { get; set; }
+        public string? EventSeverity { get; set; }
+        public string? EventMessage { get; set; }
+        public string? FindingTitle { get; set; }
+        public string? FindingRule { get; set; }
+        public string? FindingSeverity { get; set; }
+        public int? FindingConfidence { get; set; }
     }
 
     private static async Task RunSchtasksAsync(string arguments)
