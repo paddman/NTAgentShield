@@ -75,6 +75,16 @@ go build ./cmd/ntagentshield-agent \
   ./cmd/ntagentshield-inventory
 ```
 
+### Windows package
+
+Build a redistributable Windows amd64 package from PowerShell:
+
+```powershell
+.\packaging\windows\build-package.ps1 -Version 0.1.0
+```
+
+Extract the generated zip and run `install.ps1` as Administrator. The installer preserves the existing configuration and evidence on upgrade, then runs the Agent as `SYSTEM` through the `NTAgentShield` Scheduled Task at startup. See [packaging/windows/README.md](packaging/windows/README.md).
+
 ### Inspect local asset inventory
 
 ```bash
