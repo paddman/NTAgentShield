@@ -1,0 +1,12 @@
+* @paddman
+
+# Security-critical trust boundaries require explicit owner review.
+/src/ntshield/operator_auth.py @paddman
+/src/ntshield/production_*.py @paddman
+/src/ntshield/audit_ledger.py @paddman
+/src/ntshield/response_*.py @paddman
+/src/ntshield/mcp_server.py @paddman
+/agent/internal/policy/ @paddman
+/agent/internal/responseexec/ @paddman
+/agent/internal/tools/ @paddman
+/.github/workflows/ @paddman
