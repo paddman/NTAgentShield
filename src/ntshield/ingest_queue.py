@@ -200,12 +200,33 @@ class DurableIngestQueue:
                 self._conn.execute(
                     """
                     UPDATE ingest_jobs
+                    SET status = 'dead_letter', lease_owner = NULL, lease_expires_at = NULL,
+                        available_at = ?, updated_at = ?,
+                        last_error = COALESCE(last_error, 'worker lease expired at retry limit')
+                    WHERE status = 'leased' AND lease_expires_at <= ?
+                      AND attempts >= max_attempts
+                    """,
+                    (timestamp.isoformat(), timestamp.isoformat(), timestamp.isoformat()),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE ingest_jobs
                     SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
                         available_at = ?, updated_at = ?,
                         last_error = COALESCE(last_error, 'worker lease expired')
                     WHERE status = 'leased' AND lease_expires_at <= ?
+                      AND attempts < max_attempts
                     """,
                     (timestamp.isoformat(), timestamp.isoformat(), timestamp.isoformat()),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE ingest_jobs
+                    SET status = 'dead_letter', updated_at = ?,
+                        last_error = COALESCE(last_error, 'retry limit exhausted')
+                    WHERE status = 'queued' AND attempts >= max_attempts
+                    """,
+                    (timestamp.isoformat(),),
                 )
                 rows = self._conn.execute(
                     """
@@ -264,8 +285,15 @@ class DurableIngestQueue:
                 SET status = 'succeeded', result_json = ?, last_error = NULL,
                     lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
                 WHERE job_id = ? AND status = 'leased' AND lease_owner = ?
+                  AND lease_expires_at > ?
                 """,
-                (result_json, timestamp.isoformat(), job_id, worker_id),
+                (
+                    result_json,
+                    timestamp.isoformat(),
+                    job_id,
+                    worker_id,
+                    timestamp.isoformat(),
+                ),
             )
             if cursor.rowcount != 1:
                 self._conn.rollback()
@@ -294,8 +322,9 @@ class DurableIngestQueue:
                 """
                 SELECT attempts, max_attempts FROM ingest_jobs
                 WHERE job_id = ? AND status = 'leased' AND lease_owner = ?
+                  AND lease_expires_at > ?
                 """,
-                (job_id, worker_id),
+                (job_id, worker_id, timestamp.isoformat()),
             ).fetchone()
             if row is None:
                 raise ValueError("ingest job lease is missing or owned by another worker")
