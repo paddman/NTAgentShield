@@ -33,6 +33,7 @@ mcp = [
 [project.scripts]
 ntshield = "ntshield.cli:main"
 ntshield-mcp = "ntshield.mcp_server:main"
+ntshield-operator-token = "ntshield.operator_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
