@@ -9,7 +9,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY rules ./rules
-RUN pip install --upgrade pip && pip install .
+COPY migrations ./migrations
+RUN pip install --upgrade pip && pip install '.[postgres,otel]'
 
 RUN useradd --system --uid 10001 --create-home ntshield \
     && mkdir -p /app/data \
