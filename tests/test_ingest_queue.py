@@ -92,3 +92,31 @@ def test_queue_reclaims_expired_lease_and_dead_letters(tmp_path) -> None:
     else:
         raise AssertionError(f"idempotency conflict was accepted for {original.job_id}")
     queue.close()
+
+
+def test_queue_dead_letters_after_repeated_worker_crashes(tmp_path) -> None:
+    queue = DurableIngestQueue(tmp_path / "queue.db")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    job, _ = queue.enqueue(
+        tenant_id="tenant-a",
+        kind="normalized",
+        payload=payload(),
+        max_attempts=2,
+        now=now,
+    )
+    queue.claim(worker_id="worker-a", lease_seconds=10, now=now)
+    queue.claim(
+        worker_id="worker-b",
+        lease_seconds=10,
+        now=now + timedelta(seconds=11),
+    )
+    assert queue.claim(
+        worker_id="worker-c",
+        lease_seconds=10,
+        now=now + timedelta(seconds=22),
+    ) == []
+    dead = queue.get(job.job_id)
+    assert dead is not None
+    assert dead.status == "dead_letter"
+    assert dead.attempts == 2
+    queue.close()
