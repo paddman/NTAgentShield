@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/paddman/NTAgentShield/internal/agent"
@@ -17,6 +15,7 @@ import (
 	"github.com/paddman/NTAgentShield/internal/config"
 	"github.com/paddman/NTAgentShield/internal/policyupdate"
 	"github.com/paddman/NTAgentShield/internal/responseexec"
+	"github.com/paddman/NTAgentShield/internal/servicehost"
 )
 
 func main() {
@@ -27,26 +26,32 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(buildinfo.Current())
 		return
 	}
-	cfg, err := config.Load(*configPath)
+	if err := servicehost.Run("NTAgentShield", func(ctx context.Context) error {
+		return runAgent(ctx, *configPath)
+	}); err != nil {
+		fatal("run Agent service host", err)
+	}
+}
+
+func runAgent(ctx context.Context, configPath string) error {
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		fatal("load configuration", err)
+		return fmt.Errorf("load configuration: %w", err)
 	}
 	if err := config.EnsureAgentID(&cfg); err != nil {
-		fatal("initialize agent identity", err)
+		return fmt.Errorf("initialize agent identity: %w", err)
 	}
 	logger := log.New(os.Stdout, "ntagentshield ", log.LstdFlags|log.LUTC|log.Lmsgprefix)
 	runtime, err := agent.New(cfg, logger)
 	if err != nil {
-		fatal("initialize agent", err)
+		return fmt.Errorf("initialize agent: %w", err)
 	}
 	defer runtime.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if cfg.Transport.Enabled {
 		timeout, err := time.ParseDuration(cfg.Transport.Timeout)
 		if err != nil {
-			fatal("initialize secure control transport timeout", err)
+			return fmt.Errorf("initialize secure control transport timeout: %w", err)
 		}
 		policyRunner, err := policyupdate.NewRunner(policyupdate.RunnerOptions{
 			DataDir:           cfg.DataDir,
@@ -65,7 +70,7 @@ func main() {
 			go policyRunner.Run(ctx, logger)
 			logger.Printf("signed policy distribution enabled; rollback state is Agent-signed")
 		} else if !errors.Is(err, policyupdate.ErrNotConfigured) {
-			fatal("initialize signed policy distribution", err)
+			return fmt.Errorf("initialize signed policy distribution: %w", err)
 		}
 
 		responseRunner, err := responseexec.NewRunner(responseexec.RunnerOptions{
@@ -83,15 +88,16 @@ func main() {
 			Interval:          5 * time.Second,
 		})
 		if err != nil {
-			fatal("initialize signed response broker", err)
+			return fmt.Errorf("initialize signed response broker: %w", err)
 		}
 		go responseRunner.Run(ctx, logger)
 		logger.Printf("signed response broker enabled; crash-safe replay ledger is active")
 	}
 
 	if err := runtime.Run(ctx); err != nil {
-		fatal("run agent", err)
+		return fmt.Errorf("run agent: %w", err)
 	}
+	return nil
 }
 
 func fatal(operation string, err error) {
