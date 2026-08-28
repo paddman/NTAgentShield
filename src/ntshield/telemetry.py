@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +28,13 @@ def configure_open_telemetry(app: Any) -> TelemetryState:
         "NTSHIELD_OTEL_ENDPOINT",
         os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318"),
     ).strip()
-    if not endpoint.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+    parsed = urlparse(endpoint)
+    loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return TelemetryState(False, "OTLP endpoint must be an absolute HTTP(S) URL", endpoint)
+    if parsed.username is not None or parsed.password is not None:
+        return TelemetryState(False, "OTLP endpoint must not contain credentials", endpoint)
+    if parsed.scheme != "https" and not loopback:
         return TelemetryState(False, "remote OTLP endpoint must use HTTPS", endpoint)
     service_name = os.getenv("OTEL_SERVICE_NAME", "ntshield-control-plane").strip()
     try:
@@ -56,7 +63,7 @@ def configure_open_telemetry(app: Any) -> TelemetryState:
             }
         )
     )
-    exporter = OTLPSpanExporter(endpoint=endpoint.rstrip("/") + "/v1/traces")
+    exporter = OTLPSpanExporter(endpoint=_trace_endpoint(endpoint))
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     FastAPIInstrumentor.instrument_app(
@@ -66,3 +73,8 @@ def configure_open_telemetry(app: Any) -> TelemetryState:
     )
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
     return TelemetryState(True, "configured", endpoint)
+
+
+def _trace_endpoint(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    return normalized if normalized.endswith("/v1/traces") else normalized + "/v1/traces"
