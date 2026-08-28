@@ -3,11 +3,19 @@ services:
     build: .
     container_name: ntagentshield
     restart: unless-stopped
+    init: true
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
+      NTSHIELD_ENVIRONMENT: production
       NTSHIELD_DATABASE_PATH: /app/data/ntshield.db
+      NTSHIELD_AUDIT_DATABASE_PATH: /app/data/ntshield-audit.db
       NTSHIELD_RULES_PATH: /app/rules/behavioral
+      NTSHIELD_OPERATOR_AUTH_ENABLED: "true"
+      NTSHIELD_OPERATOR_SIGNING_SECRET: ${NTSHIELD_OPERATOR_SIGNING_SECRET:?set a random operator signing secret of at least 32 bytes}
+      NTSHIELD_OPERATOR_TOKEN_ISSUER: ${NTSHIELD_OPERATOR_TOKEN_ISSUER:-ntshield-control}
+      NTSHIELD_AUDIT_HMAC_SECRET: ${NTSHIELD_AUDIT_HMAC_SECRET:?set a separate random audit HMAC secret of at least 32 bytes}
+      NTSHIELD_OPERATOR_ALLOWED_ORIGINS: ${NTSHIELD_OPERATOR_ALLOWED_ORIGINS:-}
       NTSHIELD_QWEN_BASE_URL: ${NTSHIELD_QWEN_BASE_URL:-http://host.docker.internal:8000/v1}
       NTSHIELD_QWEN_API_KEY: ${NTSHIELD_QWEN_API_KEY:-EMPTY}
       NTSHIELD_QWEN_MODEL: ${NTSHIELD_QWEN_MODEL:-Qwen/Qwen3.5-9B}
@@ -17,3 +25,11 @@ services:
     volumes:
       - ./data:/app/data
       - ./rules:/app/rules:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256

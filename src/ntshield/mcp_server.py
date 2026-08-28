@@ -1,15 +1,19 @@
-"""MCP tools for Central response orchestration.
+"""Identity-bound MCP tools for Central response orchestration.
 
-These tools create and approve typed Response Broker actions. They never run
-shell commands and the proposal and approval steps remain separate so the
-Agent can enforce its own signed policy before executing an action.
+MCP may propose one typed action, but it never exposes an approval tool. Approval
+must pass through the authenticated operator API where the approver identity,
+tenant scope, exact action digest and audit chain are enforced independently.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
+from ntshield.operator_auth import OperatorTokenManager, Principal
+from ntshield.production_config import ProductionSecurityConfig
 from ntshield.response_broker import ResponseAction, ResponseBrokerStore
+from ntshield.response_identity import response_action_summary as _response_action_summary
 from ntshield.settings import Settings
 
 
@@ -19,8 +23,6 @@ def build_firewall_port_args(
     direction: str,
     port: int,
 ) -> dict[str, Any]:
-    """Validate and normalize the narrow firewall.port argument schema."""
-
     operation = operation.strip().lower()
     if operation not in {"open", "close"}:
         raise ValueError("operation must be open or close")
@@ -41,28 +43,9 @@ def build_firewall_port_args(
 
 
 def response_action_summary(action: ResponseAction) -> dict[str, Any]:
-    """Return an MCP-safe, JSON-serializable action summary."""
+    """Compatibility export with the exact approval digest included."""
 
-    return {
-        "action_id": action.action_id,
-        "tenant_id": action.tenant_id,
-        "agent_id": action.agent_id,
-        "incident_id": action.incident_id,
-        "tool": action.tool,
-        "args": action.args,
-        "reason": action.reason,
-        "risk": action.risk,
-        "requested_by": action.requested_by,
-        "requested_at": action.requested_at.isoformat(),
-        "expires_at": action.expires_at.isoformat(),
-        "status": action.status,
-        "approved_by": action.approved_by,
-        "approved_at": action.approved_at.isoformat() if action.approved_at else None,
-        "dispatch_count": action.dispatch_count,
-        "completed_at": action.completed_at.isoformat() if action.completed_at else None,
-        "result": action.result,
-        "requires_approval": action.status == "proposed",
-    }
+    return _response_action_summary(action)
 
 
 def propose_firewall_port(
@@ -75,10 +58,20 @@ def propose_firewall_port(
     direction: str,
     port: int,
     reason: str,
-    requested_by: str,
+    requested_by: str | None = None,
+    principal: Principal | None = None,
     ttl_seconds: int = 300,
     incident_id: str | None = None,
 ) -> dict[str, Any]:
+    if principal is not None:
+        principal.require("respond.propose", tenant_id)
+        requester = principal.subject
+    elif requested_by:
+        # Kept only for direct library compatibility and unit tests. MCP itself
+        # always supplies a cryptographically authenticated Principal.
+        requester = requested_by.strip()
+    else:
+        raise ValueError("an authenticated principal is required")
     args = build_firewall_port_args(operation, protocol, direction, port)
     action = store.create_action(
         tenant_id=tenant_id,
@@ -86,25 +79,37 @@ def propose_firewall_port(
         tool="firewall.port",
         args=args,
         reason=reason,
-        requested_by=requested_by,
+        requested_by=requester,
         ttl_seconds=ttl_seconds,
         incident_id=incident_id,
     )
     summary = response_action_summary(action)
-    summary["next_step"] = "เรียก approve_response_action หลังได้รับการอนุมัติจากผู้รับผิดชอบ"
+    summary["next_step"] = (
+        "อนุมัติผ่าน POST /v1/operator/responses/{action_id}/approve "
+        "ด้วยบัญชี approver คนละ principal และ action_digest นี้"
+    )
     return summary
 
 
-def create_mcp_server(settings: Settings | None = None):
-    """Create the stdio MCP server used by Central."""
-
+def create_mcp_server(
+    settings: Settings | None = None,
+    *,
+    principal: Principal | None = None,
+):
     try:
         from mcp.server.fastmcp import FastMCP
     except ModuleNotFoundError as exc:
         raise RuntimeError("ติดตั้ง MCP ก่อน: pip install 'ntagentshield[mcp]'") from exc
 
     active_settings = settings or Settings()
+    active_principal = principal or _load_mcp_principal(active_settings)
     mcp = FastMCP("NTAgentShield Central")
+
+    @mcp.tool()
+    def operator_identity() -> dict[str, object]:
+        """แสดง principal, role และ tenant scope ที่ MCP instance นี้ได้รับ"""
+
+        return active_principal.as_safe_dict()
 
     @mcp.tool()
     def firewall_port_propose(
@@ -115,11 +120,10 @@ def create_mcp_server(settings: Settings | None = None):
         direction: Literal["inbound", "outbound"],
         port: int,
         reason: str,
-        requested_by: str,
         ttl_seconds: int = 300,
         incident_id: str | None = None,
     ) -> dict[str, Any]:
-        """สร้าง proposal เปิด/ปิดพอร์ตแบบ typed; ยังไม่ส่งคำสั่งไป Agent และยังไม่อนุมัติอัตโนมัติ"""
+        """สร้าง typed proposal เท่านั้น ไม่อนุมัติและไม่ส่งคำสั่งไป Agent อัตโนมัติ"""
 
         store = ResponseBrokerStore(active_settings.database_path)
         try:
@@ -132,7 +136,7 @@ def create_mcp_server(settings: Settings | None = None):
                 direction=direction,
                 port=port,
                 reason=reason,
-                requested_by=requested_by,
+                principal=active_principal,
                 ttl_seconds=ttl_seconds,
                 incident_id=incident_id,
             )
@@ -140,29 +144,42 @@ def create_mcp_server(settings: Settings | None = None):
             store.close()
 
     @mcp.tool()
-    def approve_response_action(action_id: str, approved_by: str) -> dict[str, Any]:
-        """อนุมัติ proposal ที่ตรวจสอบแล้ว; ใช้แยกจากการสร้าง proposal เสมอ"""
-
-        store = ResponseBrokerStore(active_settings.database_path)
-        try:
-            return response_action_summary(store.approve(action_id, approved_by))
-        finally:
-            store.close()
-
-    @mcp.tool()
     def get_response_action(action_id: str) -> dict[str, Any]:
-        """ตรวจสถานะ proposal, การ dispatch และผลลัพธ์ของ Agent"""
+        """อ่านสถานะ proposal โดยบังคับ tenant scope ของ MCP principal"""
 
         store = ResponseBrokerStore(active_settings.database_path)
         try:
             action = store.get(action_id)
             if action is None:
                 raise ValueError("response action not found")
+            active_principal.require("read", action.tenant_id)
             return response_action_summary(action)
         finally:
             store.close()
 
     return mcp
+
+
+def _load_mcp_principal(settings: Settings) -> Principal:
+    del settings  # The token trust root comes from the production security config.
+    config = ProductionSecurityConfig.from_env()
+    if config.locked:
+        raise RuntimeError(
+            "MCP security configuration is incomplete: " + "; ".join(config.lock_reasons())
+        )
+    token = os.getenv("NTSHIELD_MCP_OPERATOR_TOKEN", "").strip()
+    if token.startswith("Bearer "):
+        token = token[len("Bearer ") :].strip()
+    if not token:
+        raise RuntimeError("NTSHIELD_MCP_OPERATOR_TOKEN is required")
+    manager = OperatorTokenManager(
+        config.operator_signing_secret,
+        issuer=config.operator_token_issuer,
+    )
+    principal = manager.verify(token)
+    if not principal.has_permission("respond.propose"):
+        raise RuntimeError("MCP operator token lacks respond.propose permission")
+    return principal
 
 
 def main() -> None:
