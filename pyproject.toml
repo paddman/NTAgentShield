@@ -29,17 +29,34 @@ dev = [
 mcp = [
   "mcp[cli]>=1.0,<2",
 ]
+postgres = [
+  "psycopg[binary]>=3.2,<4",
+]
+otel = [
+  "opentelemetry-api>=1.30,<2",
+  "opentelemetry-sdk>=1.30,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.30,<2",
+  "opentelemetry-instrumentation-fastapi>=0.50b0,<1",
+  "opentelemetry-instrumentation-httpx>=0.50b0,<1",
+]
 
 [project.scripts]
 ntshield = "ntshield.cli:main"
 ntshield-mcp = "ntshield.mcp_server:main"
 ntshield-operator-token = "ntshield.operator_cli:main"
+ntshield-migrate = "ntshield.migrate_cli:main"
+ntshield-worker = "ntshield.worker_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-ntshield = ["static/*", "rules/behavioral/*.yaml"]
+ntshield = [
+  "static/*",
+  "rules/behavioral/*.yaml",
+  "migration_sql/postgres/*.sql",
+  "migration_sql/sqlite/*.sql",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

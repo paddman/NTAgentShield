@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 from ntshield.app import create_app
+from ntshield.async_ingest import build_async_ingest_router, queue_path
 from ntshield.audit_ledger import AuditLedger
+from ntshield.ingest_queue import DurableIngestQueue
 from ntshield.metrics import MetricsRegistry
 from ntshield.operator_api import build_operator_router
 from ntshield.operator_auth import OperatorTokenManager
@@ -11,18 +14,17 @@ from ntshield.production_config import ProductionSecurityConfig
 from ntshield.production_security import ProductionSecurityMiddleware
 from ntshield.response_broker import ResponseBrokerStore
 from ntshield.settings import Settings
+from ntshield.telemetry import configure_open_telemetry
 
 
 def create_production_app(settings: Settings | None = None):
     active_settings = settings or Settings()
     security = ProductionSecurityConfig.from_env(database_path=active_settings.database_path)
-
-    # The core app must not re-introduce wildcard CORS after the security boundary
-    # has rejected it. An empty list deliberately permits no browser origins.
     active_settings.allowed_origins = list(security.allowed_origins)
     core = create_app(active_settings)
     audit = AuditLedger(security.audit_database_path, security.audit_hmac_secret)
     metrics = MetricsRegistry()
+    ingest_queue = DurableIngestQueue(queue_path(active_settings))
     token_manager: OperatorTokenManager | None = None
     if security.operator_auth_enabled and security.operator_signing_secret:
         try:
@@ -33,10 +35,23 @@ def create_production_app(settings: Settings | None = None):
         except ValueError:
             token_manager = None
 
+    original_lifespan = core.router.lifespan_context
+
+    @asynccontextmanager
+    async def managed_lifespan(app):
+        try:
+            async with original_lifespan(app):
+                yield
+        finally:
+            ingest_queue.close()
+            audit.close()
+
+    core.router.lifespan_context = managed_lifespan
     core.state.production_security = security
     core.state.operator_token_manager = token_manager
     core.state.audit_ledger = audit
     core.state.metrics = metrics
+    core.state.ingest_queue = ingest_queue
     core.include_router(
         build_operator_router(
             settings=active_settings,
@@ -45,6 +60,13 @@ def create_production_app(settings: Settings | None = None):
             metrics=metrics,
         )
     )
+    core.include_router(
+        build_async_ingest_router(
+            settings=active_settings,
+            queue=ingest_queue,
+        )
+    )
+    core.state.telemetry = configure_open_telemetry(core)
 
     def resolve_tenant(path: str) -> str | None:
         parts = [part for part in path.split("/") if part]
@@ -58,6 +80,9 @@ def create_production_app(settings: Settings | None = None):
             finally:
                 store.close()
             return action.tenant_id if action is not None else None
+        if len(parts) >= 5 and parts[:4] == ["v1", "operator", "ingest", "jobs"]:
+            job = ingest_queue.get(parts[4])
+            return job.tenant_id if job is not None else None
         return None
 
     return ProductionSecurityMiddleware(

@@ -8,20 +8,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$taskName = "NTAgentShield"
+$ServiceName = "NTAgentShield"
 
-if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+$legacyTask = Get-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+if ($legacyTask) {
+    Stop-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $ServiceName -Confirm:$false
 }
 
-$service = Get-CimInstance Win32_Service -Filter "Name='NTAgentShield'" -ErrorAction SilentlyContinue
+$service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if ($service) {
     if ($service.PathName -notmatch "(?i)NTAgentShield|ntagentshield-agent") {
-        throw "Refusing to remove a different service named NTAgentShield."
+        throw "Refusing to remove a different service named $ServiceName."
     }
-    Stop-Service -Name $taskName -Force -ErrorAction SilentlyContinue
-    & sc.exe delete $taskName | Out-Null
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    & sc.exe delete $ServiceName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to delete $ServiceName service." }
 }
 
 if ($RemoveFiles -and (Test-Path -LiteralPath $InstallDir)) {
@@ -35,4 +37,4 @@ if ($RemoveData -and (Test-Path -LiteralPath $DataDir)) {
     Remove-Item -LiteralPath $DataDir -Recurse -Force
 }
 
-Write-Host "NTAgentShield task removed. Configuration and evidence were retained unless -RemoveData was supplied."
+Write-Host "NTAgentShield Windows Service removed. Configuration and evidence were retained unless -RemoveData was supplied."

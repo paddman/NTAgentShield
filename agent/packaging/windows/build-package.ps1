@@ -43,14 +43,17 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $oldGoOs = $env:GOOS
 $oldGoArch = $env:GOARCH
+$oldCgoEnabled = $env:CGO_ENABLED
 try {
     $env:GOOS = "windows"
     $env:GOARCH = "amd64"
+    $env:CGO_ENABLED = "0"
     $builds = @(
         @{ Name = "ntagentshield-agent-windows-amd64.exe"; Package = "./cmd/ntagentshield-agent" },
         @{ Name = "ntagentshieldctl-windows-amd64.exe"; Package = "./cmd/ntagentshieldctl" },
         @{ Name = "ntagentshield-inventory-windows-amd64.exe"; Package = "./cmd/ntagentshield-inventory" },
-        @{ Name = "ntagentshield-enroll-windows-amd64.exe"; Package = "./cmd/ntagentshield-enroll" }
+        @{ Name = "ntagentshield-enroll-windows-amd64.exe"; Package = "./cmd/ntagentshield-enroll" },
+        @{ Name = "ntagentshield-updater-windows-amd64.exe"; Package = "./cmd/ntagentshield-updater" }
     )
     foreach ($build in $builds) {
         $target = Join-Path $Stage $build.Name
@@ -60,12 +63,16 @@ try {
 } finally {
     if ($null -eq $oldGoOs) { Remove-Item Env:GOOS -ErrorAction SilentlyContinue } else { $env:GOOS = $oldGoOs }
     if ($null -eq $oldGoArch) { Remove-Item Env:GOARCH -ErrorAction SilentlyContinue } else { $env:GOARCH = $oldGoArch }
+    if ($null -eq $oldCgoEnabled) { Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue } else { $env:CGO_ENABLED = $oldCgoEnabled }
 }
 
 $appProject = Join-Path $RepoRoot "app\NTAgentShield.App\NTAgentShield.App.csproj"
-$appOutput = Join-Path $Stage "NTAgentShield.App.exe"
+$appTarget = Join-Path $Stage "NTAgentShield.App.exe"
 & $Dotnet publish $appProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o $Stage
 if ($LASTEXITCODE -ne 0) { throw "Windows app publish failed" }
+if (-not (Test-Path -LiteralPath $appTarget -PathType Leaf)) {
+    throw "Windows app publish did not create $appTarget"
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "config"), (Join-Path $Stage "policies") | Out-Null
 Copy-Item (Join-Path $Root "config\windows.example.json") (Join-Path $Stage "config\windows.example.json") -Force
@@ -81,6 +88,8 @@ Copy-Item (Join-Path $Root "LICENSE") (Join-Path $Stage "LICENSE") -Force
     commit = $Commit
     built_at_utc = $Date
     architecture = "windows-amd64"
+    service_host = "windows-scm"
+    update_manifest_schema = "ntshield-update/v1"
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Stage "VERSION.json") -Encoding UTF8
 
 $checksumLines = Get-ChildItem -LiteralPath $Stage -Recurse -File | ForEach-Object {

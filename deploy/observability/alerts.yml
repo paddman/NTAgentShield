@@ -1,0 +1,33 @@
+groups:
+  - name: ntagentshield-production
+    rules:
+      - alert: NTAgentShieldControlPlaneLocked
+        expr: ntshield_readiness == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: NTAgentShield production readiness is failing
+          description: Operator security, audit verification, or rule loading is not ready.
+      - alert: NTAgentShieldHighErrorBudgetBurn
+        expr: ntshield:slo_operator_api_error_ratio5m > 0.01
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: Operator API is burning the 99.9% availability budget rapidly
+      - alert: NTAgentShieldOperatorLatencyHigh
+        expr: ntshield:slo_operator_api_latency_p95_seconds5m > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Operator API p95 latency exceeds 500 ms
+      - alert: NTAgentShieldAuditAppendFailure
+        expr: ntshield:audit_append_failure_rate5m > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Control-plane audit ledger append failed
+          description: Protected requests should fail closed while this alert is active.

@@ -1,0 +1,211 @@
+name: Signed release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-control-plane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: control-plane
+          path: dist/*
+          if-no-files-found: error
+
+  build-agent:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: agent/go.mod
+      - name: Test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: go test ./...
+      - name: Build reproducible binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ -z "$version" || "$version" == "$GITHUB_REF_NAME" ]]; then version="0.0.0"; fi
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          pkg="github.com/paddman/NTAgentShield/internal/buildinfo"
+          ldflags="-s -w -X ${pkg}.Version=${version} -X ${pkg}.Commit=${GITHUB_SHA} -X ${pkg}.Date=${date}"
+          mkdir -p dist
+          for command in ntagentshield-agent ntagentshieldctl ntagentshield-inventory ntagentshield-enroll ntagentshield-updater; do
+            go build -trimpath -buildvcs=true -ldflags "$ldflags" \
+              -o "dist/${command}-${GOOS}-${GOARCH}${{ matrix.suffix }}" "./cmd/${command}"
+          done
+          (cd dist && sha256sum * > "SHA256SUMS-${GOOS}-${GOARCH}")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: agent/dist/*
+          if-no-files-found: error
+
+  build-signed-windows-package:
+    runs-on: windows-latest
+    env:
+      WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+      WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: agent/go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build Windows package
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          if (-not $version) { $version = "0.0.0" }
+          .\agent\packaging\windows\build-package.ps1 -Version $version
+      - name: Authenticode sign package executables
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX)) {
+            throw "WINDOWS_SIGNING_PFX secret is required for release tags."
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "ntshield-release.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX))
+          $securePassword = ConvertTo-SecureString $env:WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+          try {
+            $zip = Get-ChildItem .\agent\dist\windows\ntagentshield-windows-amd64-*.zip | Select-Object -First 1
+            $stage = Join-Path $env:RUNNER_TEMP "signed-package"
+            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $stage -Force
+            Get-ChildItem $stage -Recurse -Filter *.exe | ForEach-Object {
+              $signature = Set-AuthenticodeSignature -FilePath $_.FullName -Certificate $certificate -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
+              if ($signature.Status -ne 'Valid') { throw "Authenticode signing failed for $($_.Name): $($signature.StatusMessage)" }
+            }
+            Remove-Item (Join-Path $stage "SHA256SUMS.txt") -Force -ErrorAction SilentlyContinue
+            Get-ChildItem $stage -Recurse -File | ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              $relative = $_.FullName.Substring($stage.Length).TrimStart('\')
+              "$hash  $relative"
+            } | Set-Content (Join-Path $stage "SHA256SUMS.txt") -Encoding ASCII
+            Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip.FullName -CompressionLevel Optimal -Force
+            Copy-Item -LiteralPath (Join-Path $stage 'ntagentshield-agent-windows-amd64.exe') `
+              -Destination .\agent\dist\windows\ntagentshield-agent-windows-amd64.exe -Force
+          } finally {
+            Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: |
+            agent/dist/windows/ntagentshield-windows-amd64-*.zip
+            agent/dist/windows/ntagentshield-agent-windows-amd64.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [build-control-plane, build-agent, build-signed-windows-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_SIGNING_PRIVATE_KEY_PEM_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_PEM_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Require immutable update signing key
+        run: |
+          test -n "$UPDATE_SIGNING_PRIVATE_KEY_PEM_B64" || {
+            echo "UPDATE_SIGNING_PRIVATE_KEY_PEM_B64 secret is required" >&2
+            exit 1
+          }
+      - name: Generate signed update manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          for artifact in release/ntagentshield-agent-linux-amd64 release/ntagentshield-agent-linux-arm64 release/ntagentshield-agent-windows-amd64.exe; do
+            case "$artifact" in
+              *linux-amd64) os=linux; arch=amd64 ;;
+              *linux-arm64) os=linux; arch=arm64 ;;
+              *windows-amd64.exe) os=windows; arch=amd64 ;;
+            esac
+            python scripts/sign_update_manifest.py \
+              --artifact "$artifact" \
+              --artifact-url "$base/$(basename "$artifact")" \
+              --version "$version" \
+              --os "$os" \
+              --arch "$arch" \
+              --key-id "github-release-${GITHUB_REF_NAME}" \
+              --output "${artifact}.manifest.json"
+          done
+      - name: Generate SPDX SBOM and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/generate_spdx_sbom.py \
+            --directory release \
+            --name "NTAgentShield-${GITHUB_REF_NAME}" \
+            --namespace "https://github.com/${GITHUB_REPOSITORY}/releases/${GITHUB_REF_NAME}/sbom" \
+            --output release/NTAgentShield.spdx.json
+          (cd release && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - name: Attest release provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+      - name: Attest release SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+          sbom-path: release/NTAgentShield.spdx.json
+      - name: Publish immutable GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "NTAgentShield $GITHUB_REF_NAME"

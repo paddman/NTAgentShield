@@ -1,0 +1,19 @@
+groups:
+  - name: ntagentshield-slo-recording
+    interval: 30s
+    rules:
+      - record: ntshield:slo_operator_api_error_ratio5m
+        expr: |
+          sum(rate(ntshield_http_requests_total{route_class!="public",status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(ntshield_http_requests_total{route_class!="public"}[5m])), 0.001)
+      - record: ntshield:slo_operator_api_latency_p95_seconds5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(ntshield_http_request_duration_seconds_bucket{route_class!="public"}[5m])
+            )
+          )
+      - record: ntshield:audit_append_failure_rate5m
+        expr: sum(rate(ntshield_audit_append_failures_total[5m]))
