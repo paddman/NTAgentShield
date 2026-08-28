@@ -18,3 +18,11 @@ def test_remote_plain_http_otel_endpoint_is_rejected(monkeypatch) -> None:
     state = configure_open_telemetry(FastAPI())
     assert not state.enabled
     assert "HTTPS" in state.reason
+
+
+def test_loopback_prefix_spoof_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("NTSHIELD_OTEL_ENABLED", "true")
+    monkeypatch.setenv("NTSHIELD_OTEL_ENDPOINT", "http://127.0.0.1.evil.example:4318")
+    state = configure_open_telemetry(FastAPI())
+    assert not state.enabled
+    assert "HTTPS" in state.reason
